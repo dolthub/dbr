@@ -213,9 +213,18 @@ func (b *UpdateStmt) ExecContext(ctx context.Context) (sql.Result, error) {
 	return res, err
 }
 
+func (b *UpdateStmt) ExecContextDebug(ctx context.Context) (sql.Result, string, error) {
+	return exec(ctx, b.runner, b.EventReceiver, b, b.Dialect)
+}
+
 func (b *UpdateStmt) LoadContext(ctx context.Context, value interface{}) error {
 	_, _, err := query(ctx, b.runner, b.EventReceiver, b, b.Dialect, value)
 	return err
+}
+
+func (b *UpdateStmt) LoadContextDebug(ctx context.Context, value interface{}) (string, error) {
+	_, queryStr, err := query(ctx, b.runner, b.EventReceiver, b, b.Dialect, value)
+	return queryStr, err
 }
 
 func (b *UpdateStmt) Load(value interface{}) error {

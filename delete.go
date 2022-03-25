@@ -139,3 +139,7 @@ func (b *DeleteStmt) ExecContext(ctx context.Context) (sql.Result, error) {
 	res, _, err := exec(ctx, b.runner, b.EventReceiver, b, b.Dialect)
 	return res, err
 }
+
+func (b *DeleteStmt) ExecContextDebug(ctx context.Context) (sql.Result, string, error) {
+	return exec(ctx, b.runner, b.EventReceiver, b, b.Dialect)
+}

@@ -411,15 +411,20 @@ func (b *SelectStmt) RowsContext(ctx context.Context) (*sql.Rows, error) {
 	return rows, err
 }
 
-func (b *SelectStmt) LoadOneContext(ctx context.Context, value interface{}) error {
-	count, _, err := query(ctx, b.runner, b.EventReceiver, b, b.Dialect, value)
+func (b *SelectStmt) LoadOneContextDebug(ctx context.Context, value interface{}) (string, error) {
+	count, queryStr, err := query(ctx, b.runner, b.EventReceiver, b, b.Dialect, value)
 	if err != nil {
-		return err
+		return queryStr, err
 	}
 	if count == 0 {
-		return ErrNotFound
+		return queryStr, ErrNotFound
 	}
-	return nil
+	return queryStr, nil
+}
+
+func (b *SelectStmt) LoadOneContext(ctx context.Context, value interface{}) error {
+	_, err := b.LoadOneContextDebug(ctx, value)
+	return err
 }
 
 // LoadOne loads SQL result into go variable that is not a slice.

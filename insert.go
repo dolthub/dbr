@@ -239,9 +239,14 @@ func (b *InsertStmt) Exec() (sql.Result, error) {
 }
 
 func (b *InsertStmt) ExecContext(ctx context.Context) (sql.Result, error) {
-	result, _, err := exec(ctx, b.runner, b.EventReceiver, b, b.Dialect)
+	res, _, err := b.ExecContextDebug(ctx)
+	return res, err
+}
+
+func (b *InsertStmt) ExecContextDebug(ctx context.Context) (sql.Result, string, error) {
+	result, queryStr, err := exec(ctx, b.runner, b.EventReceiver, b, b.Dialect)
 	if err != nil {
-		return nil, err
+		return nil, queryStr, err
 	}
 
 	if b.RecordID != nil {
@@ -251,12 +256,17 @@ func (b *InsertStmt) ExecContext(ctx context.Context) (sql.Result, error) {
 		b.RecordID = nil
 	}
 
-	return result, nil
+	return result, queryStr, nil
 }
 
 func (b *InsertStmt) LoadContext(ctx context.Context, value interface{}) error {
 	_, _, err := query(ctx, b.runner, b.EventReceiver, b, b.Dialect, value)
 	return err
+}
+
+func (b *InsertStmt) LoadContextDebug(ctx context.Context, value interface{}) (string, error) {
+	_, queryStr, err := query(ctx, b.runner, b.EventReceiver, b, b.Dialect, value)
+	return queryStr, err
 }
 
 func (b *InsertStmt) Load(value interface{}) error {
