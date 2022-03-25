@@ -412,7 +412,7 @@ func (b *SelectStmt) RowsContext(ctx context.Context) (*sql.Rows, error) {
 }
 
 func (b *SelectStmt) LoadOneContext(ctx context.Context, value interface{}) error {
-	count, err := query(ctx, b.runner, b.EventReceiver, b, b.Dialect, value)
+	count, _, err := query(ctx, b.runner, b.EventReceiver, b, b.Dialect, value)
 	if err != nil {
 		return err
 	}
@@ -431,6 +431,11 @@ func (b *SelectStmt) LoadOne(value interface{}) error {
 }
 
 func (b *SelectStmt) LoadContext(ctx context.Context, value interface{}) (int, error) {
+	n, _, err := query(ctx, b.runner, b.EventReceiver, b, b.Dialect, value)
+	return n, err
+}
+
+func (b *SelectStmt) LoadContextDebug(ctx context.Context, value interface{}) (int, string, error) {
 	return query(ctx, b.runner, b.EventReceiver, b, b.Dialect, value)
 }
 

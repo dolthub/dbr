@@ -209,11 +209,12 @@ func (b *UpdateStmt) Exec() (sql.Result, error) {
 }
 
 func (b *UpdateStmt) ExecContext(ctx context.Context) (sql.Result, error) {
-	return exec(ctx, b.runner, b.EventReceiver, b, b.Dialect)
+	res, _, err := exec(ctx, b.runner, b.EventReceiver, b, b.Dialect)
+	return res, err
 }
 
 func (b *UpdateStmt) LoadContext(ctx context.Context, value interface{}) error {
-	_, err := query(ctx, b.runner, b.EventReceiver, b, b.Dialect, value)
+	_, _, err := query(ctx, b.runner, b.EventReceiver, b, b.Dialect, value)
 	return err
 }
 

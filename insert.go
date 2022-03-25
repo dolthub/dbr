@@ -239,7 +239,7 @@ func (b *InsertStmt) Exec() (sql.Result, error) {
 }
 
 func (b *InsertStmt) ExecContext(ctx context.Context) (sql.Result, error) {
-	result, err := exec(ctx, b.runner, b.EventReceiver, b, b.Dialect)
+	result, _, err := exec(ctx, b.runner, b.EventReceiver, b, b.Dialect)
 	if err != nil {
 		return nil, err
 	}
@@ -255,7 +255,7 @@ func (b *InsertStmt) ExecContext(ctx context.Context) (sql.Result, error) {
 }
 
 func (b *InsertStmt) LoadContext(ctx context.Context, value interface{}) error {
-	_, err := query(ctx, b.runner, b.EventReceiver, b, b.Dialect, value)
+	_, _, err := query(ctx, b.runner, b.EventReceiver, b, b.Dialect, value)
 	return err
 }
 

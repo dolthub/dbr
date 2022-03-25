@@ -105,7 +105,7 @@ type runner interface {
 	QueryContext(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error)
 }
 
-func exec(ctx context.Context, runner runner, log EventReceiver, builder Builder, d Dialect) (sql.Result, error) {
+func exec(ctx context.Context, runner runner, log EventReceiver, builder Builder, d Dialect) (sql.Result, string, error) {
 	timeout := runner.GetTimeout()
 	if timeout > 0 {
 		var cancel func()
@@ -121,7 +121,7 @@ func exec(ctx context.Context, runner runner, log EventReceiver, builder Builder
 	err := i.encodePlaceholder(builder, true)
 	query, value := i.String(), i.Value()
 	if err != nil {
-		return nil, log.EventErrKv("dbr.exec.interpolate", err, kvs{
+		return nil, query, log.EventErrKv("dbr.exec.interpolate", err, kvs{
 			"sql":  query,
 			"args": fmt.Sprint(value),
 		})
@@ -145,11 +145,11 @@ func exec(ctx context.Context, runner runner, log EventReceiver, builder Builder
 		if hasTracingImpl {
 			traceImpl.SpanError(ctx, err)
 		}
-		return result, log.EventErrKv("dbr.exec.exec", err, kvs{
+		return result, query, log.EventErrKv("dbr.exec.exec", err, kvs{
 			"sql": query,
 		})
 	}
-	return result, nil
+	return result, query, nil
 }
 
 func queryRows(ctx context.Context, runner runner, log EventReceiver, builder Builder, d Dialect) (string, *sql.Rows, error) {
@@ -196,7 +196,7 @@ func queryRows(ctx context.Context, runner runner, log EventReceiver, builder Bu
 	return query, rows, nil
 }
 
-func query(ctx context.Context, runner runner, log EventReceiver, builder Builder, d Dialect, dest interface{}) (int, error) {
+func query(ctx context.Context, runner runner, log EventReceiver, builder Builder, d Dialect, dest interface{}) (int, string, error) {
 	timeout := runner.GetTimeout()
 	if timeout > 0 {
 		var cancel func()
@@ -206,13 +206,13 @@ func query(ctx context.Context, runner runner, log EventReceiver, builder Builde
 
 	query, rows, err := queryRows(ctx, runner, log, builder, d)
 	if err != nil {
-		return 0, err
+		return 0, query, err
 	}
 	count, err := Load(rows, dest)
 	if err != nil {
-		return 0, log.EventErrKv("dbr.select.load.scan", err, kvs{
+		return 0, query, log.EventErrKv("dbr.select.load.scan", err, kvs{
 			"sql": query,
 		})
 	}
-	return count, nil
+	return count, query, nil
 }
