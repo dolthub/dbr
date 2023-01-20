@@ -95,36 +95,59 @@ func TestTransactionCommitMpx(t *testing.T) {
 	}
 }
 
-//func TestTransactionMpxRollback(t *testing.T) {
-//	for _, sessMpx := range testSessionMpx {
-//		resetMpx(t, sessMpx)
-//
-//		txMpx, err := sessMpx.Begin()
-//		require.NoError(t, err)
-//		defer txMpx.RollbackUnlessCommitted()
-//
-//		if sessMpx.PrimaryConn.Dialect == dialect.MSSQL || sessMpx.SecondaryConn.Dialect == dialect.MSSQL {
-//			txMpx.UpdateBySql("SET IDENTITY_INSERT dbr_people ON;").Exec()
-//		}
-//
-//		id := 1
-//		primaryResult, secondaryResult, err := txMpx.InsertInto("dbr_people").Columns("id", "name", "email").Values(id, "Barack", "obama@whitehouse.gov").Exec()
-//		require.NoError(t, err)
-//
-//		primaryRowsAffected, err := primaryResult.RowsAffected()
-//		require.NoError(t, err)
-//		require.Equal(t, int64(1), primaryRowsAffected)
-//
-//		secondaryRowsAffected, err := secondaryResult.RowsAffected()
-//		require.NoError(t, err)
-//		require.Equal(t, int64(1), secondaryRowsAffected)
-//
-//		err = txMpx.Rollback()
-//		require.NoError(t, err)
-//
-//		// Selects use only primary
-//		var person dbrPerson
-//		err = txMpx.Select("*").From("dbr_people").Where(Eq("id", id)).LoadOne(&person)
-//		require.Error(t, err)
-//	}
-//}
+func TestTransactionMpxRollback(t *testing.T) {
+	for _, sessMpx := range testSessionMpx {
+		resetMpx(t, sessMpx)
+
+		txMpx, err := sessMpx.Begin()
+		require.NoError(t, err)
+		defer txMpx.RollbackUnlessCommitted()
+
+		if sessMpx.PrimaryConn.Dialect == dialect.MSSQL || sessMpx.SecondaryConn.Dialect == dialect.MSSQL {
+			txMpx.UpdateBySql("SET IDENTITY_INSERT dbr_people ON;").Exec()
+		}
+
+		id := 1
+		primaryResult, secondaryAsyncResultChan, err := txMpx.InsertInto("dbr_people").Columns("id", "name", "email").Values(id, "Barack", "obama@whitehouse.gov").Exec()
+		require.NoError(t, err)
+
+		primaryRowsAffected, err := primaryResult.RowsAffected()
+		require.NoError(t, err)
+		require.Equal(t, int64(1), primaryRowsAffected)
+
+		err = txMpx.Rollback()
+		require.NoError(t, err)
+
+		// Selects use only primary
+		var person dbrPerson
+		err = txMpx.Select("*").From("dbr_people").Where(Eq("id", id)).LoadOne(&person)
+		require.Error(t, err)
+
+		eg, egCtx := errgroup.WithContext(context.Background())
+		eg.Go(func() error {
+			for {
+				select {
+				case <-egCtx.Done():
+					return egCtx.Err()
+				case asyncResult, ok := <-secondaryAsyncResultChan:
+					require.True(t, ok)
+
+					for {
+						select {
+						case <-egCtx.Done():
+							return egCtx.Err()
+						case rerr, ok := <-asyncResult.ErrChan:
+							require.True(t, ok)
+							require.NoError(t, rerr)
+						default:
+							secondaryRowsAffected, rerr := asyncResult.Result.RowsAffected()
+							require.NoError(t, rerr)
+							require.Equal(t, int64(1), secondaryRowsAffected)
+							return nil
+						}
+					}
+				}
+			}
+		})
+	}
+}

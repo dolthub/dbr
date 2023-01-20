@@ -32,29 +32,6 @@ func BenchmarkUpdateMpxMapSQL(b *testing.B) {
 	}
 }
 
-// TODO: RETURNING is not mysql word, can remove test
-
-//func TestPostgresMysqlUpdateMpxReturning(t *testing.T) {
-//	sessMpx := postgresMysqlSessionMpx
-//	resetMpx(t, sessMpx)
-//
-//	var primaryIds []int
-//	var secondaryIds []int
-//	err := sessMpx.Update("dbr_people").Set("name", "Kordian").
-//		Where(Eq("id", 1)).Returning("id").Load(&primaryIds, &secondaryIds)
-//	require.NoError(t, err)
-//	require.Len(t, sessMpx.PrimaryEventReceiver.(*testTraceReceiver).started, 1)
-//	require.Len(t, sessMpx.SecondaryEventReceiver.(*testTraceReceiver).started, 1)
-//
-//	//require.Contains(t, sess.EventReceiver.(*testTraceReceiver).started[0].eventName, "dbr.select")
-//	//require.Contains(t, sess.EventReceiver.(*testTraceReceiver).started[0].query, "UPDATE")
-//	//require.Contains(t, sess.EventReceiver.(*testTraceReceiver).started[0].query, "dbr_people")
-//	//require.Contains(t, sess.EventReceiver.(*testTraceReceiver).started[0].query, "name")
-//	//require.Contains(t, sess.EventReceiver.(*testTraceReceiver).started[0].query, "RETURNING")
-//	//require.Equal(t, 1, sess.EventReceiver.(*testTraceReceiver).finished)
-//	//require.Equal(t, 0, sess.EventReceiver.(*testTraceReceiver).errored)
-//}
-
 func TestUpdateMpxIncrBy(t *testing.T) {
 	buf := NewBuffer()
 	builder := UpdateMpx("table").IncrBy("a", 1).Where(Eq("b", 2))

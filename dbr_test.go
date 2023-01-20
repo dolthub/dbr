@@ -3,6 +3,7 @@ package dbr
 import (
 	"context"
 	"fmt"
+	"golang.org/x/sync/errgroup"
 	"os"
 	"testing"
 	"time"
@@ -227,90 +228,84 @@ func TestBasicCRUD(t *testing.T) {
 	}
 }
 
-//func TestBasicCRUDMpx(t *testing.T) {
-//	for _, sessMpx := range testSessionMpx {
-//		resetMpx(t, sessMpx)
-//
-//		jonathan := dbrPerson{
-//			Name:  "jonathan",
-//			Email: "jonathan@uservoice.com",
-//		}
-//		insertColumns := []string{"name", "email"}
-//		if sessMpx.PrimaryConn.Dialect == dialect.PostgreSQL || sessMpx.SecondaryConn.Dialect == dialect.PostgreSQL {
-//			jonathan.Id = 1
-//			insertColumns = []string{"id", "name", "email"}
-//		}
-//		if sessMpx.PrimaryConn.Dialect == dialect.MSSQL || sessMpx.SecondaryConn.Dialect == dialect.MSSQL {
-//			jonathan.Id = 1
-//		}
-//
-//		// insert
-//		primaryResult, secondaryResult, err := sessMpx.InsertInto("dbr_people").Columns(insertColumns...).Record(&jonathan).Exec()
-//		require.NoError(t, err)
-//
-//		primaryRowsAffected, err := primaryResult.RowsAffected()
-//		require.NoError(t, err)
-//		require.Equal(t, int64(1), primaryRowsAffected)
-//
-//		secondaryRowsAffected, err := secondaryResult.RowsAffected()
-//		require.NoError(t, err)
-//		require.Equal(t, int64(1), secondaryRowsAffected)
-//
-//		require.True(t, jonathan.Id > 0)
-//
-//		// select
-//		var people []dbrPerson
-//		count, err := sessMpx.Select("*").From("dbr_people").Where(Eq("id", jonathan.Id)).Load(&people)
-//		require.NoError(t, err)
-//		require.Equal(t, 1, count)
-//		require.Equal(t, jonathan.Id, people[0].Id)
-//		require.Equal(t, jonathan.Name, people[0].Name)
-//		require.Equal(t, jonathan.Email, people[0].Email)
-//
-//		// select id
-//		ids, err := sessMpx.Select("id").From("dbr_people").ReturnInt64s()
-//		require.NoError(t, err)
-//		require.Equal(t, 1, len(ids))
-//
-//		// select id limit
-//		ids, err = sessMpx.Select("id").From("dbr_people").Limit(1).ReturnInt64s()
-//		require.NoError(t, err)
-//		require.Equal(t, 1, len(ids))
-//
-//		// update
-//		primaryResult, secondaryResult, err = sessMpx.Update("dbr_people").Where(Eq("id", jonathan.Id)).Set("name", "jonathan1").Exec()
-//		require.NoError(t, err)
-//
-//		primaryRowsAffected, err = primaryResult.RowsAffected()
-//		require.NoError(t, err)
-//		require.Equal(t, int64(1), primaryRowsAffected)
-//
-//		secondaryRowsAffected, err = secondaryResult.RowsAffected()
-//		require.NoError(t, err)
-//		require.Equal(t, int64(1), secondaryRowsAffected)
-//
-//		var n NullInt64
-//		sessMpx.Select("count(*)").From("dbr_people").Where("name = ?", "jonathan1").LoadOne(&n)
-//		require.Equal(t, int64(1), n.Int64)
-//
-//		// delete
-//		primaryResult, secondaryResult, err = sessMpx.DeleteFrom("dbr_people").Where(Eq("id", jonathan.Id)).Exec()
-//		require.NoError(t, err)
-//
-//		primaryRowsAffected, err = primaryResult.RowsAffected()
-//		require.NoError(t, err)
-//		require.Equal(t, int64(1), primaryRowsAffected)
-//
-//		secondaryRowsAffected, err = secondaryResult.RowsAffected()
-//		require.NoError(t, err)
-//		require.Equal(t, int64(1), secondaryRowsAffected)
-//
-//		// select id
-//		ids, err = sessMpx.Select("id").From("dbr_people").ReturnInt64s()
-//		require.NoError(t, err)
-//		require.Equal(t, 0, len(ids))
-//	}
-//}
+func TestBasicCRUDMpx(t *testing.T) {
+	for _, sessMpx := range testSessionMpx {
+		resetMpx(t, sessMpx)
+
+		jonathan := dbrPerson{
+			Name:  "jonathan",
+			Email: "jonathan@uservoice.com",
+		}
+		insertColumns := []string{"name", "email"}
+		if sessMpx.PrimaryConn.Dialect == dialect.PostgreSQL || sessMpx.SecondaryConn.Dialect == dialect.PostgreSQL {
+			jonathan.Id = 1
+			insertColumns = []string{"id", "name", "email"}
+		}
+		if sessMpx.PrimaryConn.Dialect == dialect.MSSQL || sessMpx.SecondaryConn.Dialect == dialect.MSSQL {
+			jonathan.Id = 1
+		}
+
+		// insert
+		primaryResult, secondaryAsyncResultChan, err := sessMpx.InsertInto("dbr_people").Columns(insertColumns...).Record(&jonathan).Exec()
+		require.NoError(t, err)
+
+		primaryRowsAffected, err := primaryResult.RowsAffected()
+		require.NoError(t, err)
+		require.Equal(t, int64(1), primaryRowsAffected)
+
+		require.True(t, jonathan.Id > 0)
+
+		asyncRequireAffectedRows(t, secondaryAsyncResultChan)
+
+		// select
+		var people []dbrPerson
+		count, err := sessMpx.Select("*").From("dbr_people").Where(Eq("id", jonathan.Id)).Load(&people)
+		require.NoError(t, err)
+		require.Equal(t, 1, count)
+		require.Equal(t, jonathan.Id, people[0].Id)
+		require.Equal(t, jonathan.Name, people[0].Name)
+		require.Equal(t, jonathan.Email, people[0].Email)
+
+		// select id
+		ids, err := sessMpx.Select("id").From("dbr_people").ReturnInt64s()
+		require.NoError(t, err)
+		require.Equal(t, 1, len(ids))
+
+		// select id limit
+		ids, err = sessMpx.Select("id").From("dbr_people").Limit(1).ReturnInt64s()
+		require.NoError(t, err)
+		require.Equal(t, 1, len(ids))
+
+		// update
+		primaryResult, secondaryAsyncResultChan, err = sessMpx.Update("dbr_people").Where(Eq("id", jonathan.Id)).Set("name", "jonathan1").Exec()
+		require.NoError(t, err)
+
+		primaryRowsAffected, err = primaryResult.RowsAffected()
+		require.NoError(t, err)
+		require.Equal(t, int64(1), primaryRowsAffected)
+
+		asyncRequireAffectedRows(t, secondaryAsyncResultChan)
+
+		var n NullInt64
+		sessMpx.Select("count(*)").From("dbr_people").Where("name = ?", "jonathan1").LoadOne(&n)
+		require.Equal(t, int64(1), n.Int64)
+
+		// delete
+		primaryResult, secondaryAsyncResultChan, err = sessMpx.DeleteFrom("dbr_people").Where(Eq("id", jonathan.Id)).Exec()
+		require.NoError(t, err)
+
+		primaryRowsAffected, err = primaryResult.RowsAffected()
+		require.NoError(t, err)
+		require.Equal(t, int64(1), primaryRowsAffected)
+
+		asyncRequireAffectedRows(t, secondaryAsyncResultChan)
+
+		// select id
+		ids, err = sessMpx.Select("id").From("dbr_people").ReturnInt64s()
+		require.NoError(t, err)
+		require.Equal(t, 0, len(ids))
+	}
+}
 
 func TestTimeout(t *testing.T) {
 	mysqlSession := createSession("mysql", mysqlDSN)
@@ -453,4 +448,34 @@ func TestSecondaryTimeoutMpx(t *testing.T) {
 		_, _, err = txMpx.DeleteFrom("dbr_people").Exec()
 		require.Equal(t, context.DeadlineExceeded, err)
 	}
+}
+
+func asyncRequireAffectedRows(t *testing.T, secondaryAsyncResultChan AsyncResultChan) {
+	eg, egCtx := errgroup.WithContext(context.Background())
+	eg.Go(func() error {
+		for {
+			select {
+			case <-egCtx.Done():
+				return egCtx.Err()
+			case asyncResult, ok := <-secondaryAsyncResultChan:
+				require.True(t, ok)
+
+				for {
+					select {
+					case <-egCtx.Done():
+						return egCtx.Err()
+					case rerr, ok := <-asyncResult.ErrChan:
+						require.True(t, ok)
+						require.NoError(t, rerr)
+					default:
+						secondaryRowsAffected, rerr := asyncResult.Result.RowsAffected()
+						require.NoError(t, rerr)
+						require.Equal(t, int64(1), secondaryRowsAffected)
+						return nil
+					}
+				}
+			}
+		}
+	})
+	require.NoError(t, eg.Wait())
 }
