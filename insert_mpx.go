@@ -3,6 +3,8 @@ package dbr
 import (
 	"context"
 	"database/sql"
+	"errors"
+	"golang.org/x/sync/errgroup"
 	"reflect"
 	"strings"
 
@@ -261,19 +263,19 @@ func (b *InsertStmtMpx) Pair(column string, value interface{}) *InsertStmtMpx {
 	return b
 }
 
-func (b *InsertStmtMpx) Exec() (sql.Result, sql.Result, error) {
+func (b *InsertStmtMpx) Exec() (sql.Result, AsyncResultChan, error) {
 	return b.ExecContext(context.Background())
 }
 
-func (b *InsertStmtMpx) ExecContext(ctx context.Context) (sql.Result, sql.Result, error) {
-	primaryRes, _, secondaryRes, _, err := b.ExecContextDebug(ctx)
-	return primaryRes, secondaryRes, err
+func (b *InsertStmtMpx) ExecContext(ctx context.Context) (sql.Result, AsyncResultChan, error) {
+	primaryRes, _, secondaryAsyncResultChan, err := b.ExecContextDebug(ctx)
+	return primaryRes, secondaryAsyncResultChan, err
 }
 
-func (b *InsertStmtMpx) ExecContextDebug(ctx context.Context) (sql.Result, string, sql.Result, string, error) {
-	primaryResult, primaryQueryStr, secondaryResult, secondaryQueryStr, err := execMpx(ctx, b.RunnerMpx, b.PrimaryEventReceiver, b.SecondaryEventReceiver, b, b.PrimaryDialect, b.SecondaryDialect)
+func (b *InsertStmtMpx) ExecContextDebug(ctx context.Context) (sql.Result, string, AsyncResultChan, error) {
+	primaryResult, primaryQueryStr, secondaryAsyncResultChan, err := execMpx(ctx, b.RunnerMpx, b.PrimaryEventReceiver, b.SecondaryEventReceiver, b, b.PrimaryDialect, b.SecondaryDialect)
 	if err != nil {
-		return nil, primaryQueryStr, nil, secondaryQueryStr, err
+		return nil, primaryQueryStr, nil, err
 	}
 
 	if b.PrimaryRecordID != nil {
@@ -282,26 +284,70 @@ func (b *InsertStmtMpx) ExecContextDebug(ctx context.Context) (sql.Result, strin
 		}
 		b.PrimaryRecordID = nil
 	}
-	if b.SecondaryRecordID != nil {
-		if id, err := secondaryResult.LastInsertId(); err == nil {
-			*b.SecondaryRecordID = id
+
+	secondaryErrChan := make(chan error)
+	newSecondaryAsyncResultChan := make(AsyncResultChan)
+
+	eg, egCtx := errgroup.WithContext(ctx)
+
+	go func() {
+		defer close(secondaryErrChan)
+		secondaryErrChan <- eg.Wait()
+	}()
+
+	eg.Go(func() error {
+		defer close(newSecondaryAsyncResultChan)
+
+		for {
+			select {
+			case <-egCtx.Done():
+				return egCtx.Err()
+			case asyncResult, ok := <-secondaryAsyncResultChan:
+				if !ok {
+					return errors.New("failed to read result from asyncResultChan")
+				}
+
+				for {
+					select {
+					case <-egCtx.Done():
+						return egCtx.Err()
+					case rerr, ok := <-asyncResult.ErrChan:
+						if !ok {
+							return errors.New("failed to read error from errChan")
+						}
+						if rerr != nil {
+							return rerr
+						}
+
+					default:
+						if b.SecondaryRecordID != nil {
+							if id, rerr := asyncResult.Result.LastInsertId(); rerr == nil {
+								*b.SecondaryRecordID = id
+							}
+							b.SecondaryRecordID = nil
+						}
+
+						asyncResult.ErrChan = secondaryErrChan
+						newSecondaryAsyncResultChan <- asyncResult
+					}
+				}
+			}
 		}
-		b.SecondaryRecordID = nil
-	}
+	})
 
-	return primaryResult, primaryQueryStr, secondaryResult, secondaryQueryStr, nil
+	return primaryResult, primaryQueryStr, newSecondaryAsyncResultChan, nil
 }
 
-func (b *InsertStmtMpx) LoadContext(ctx context.Context, primaryValue, secondaryValue interface{}) error {
-	_, _, _, _, err := queryMpx(ctx, b.RunnerMpx, b.PrimaryEventReceiver, b.SecondaryEventReceiver, b, b.PrimaryDialect, b.SecondaryDialect, primaryValue, secondaryValue)
-	return err
+func (b *InsertStmtMpx) LoadContext(ctx context.Context, primaryValue, secondaryValue interface{}) (AsyncCountChan, error) {
+	_, _, secondaryAsyncCountChan, err := queryMpx(ctx, b.RunnerMpx, b.PrimaryEventReceiver, b.SecondaryEventReceiver, b, b.PrimaryDialect, b.SecondaryDialect, primaryValue, secondaryValue)
+	return secondaryAsyncCountChan, err
 }
 
-func (b *InsertStmtMpx) LoadContextDebug(ctx context.Context, primaryValue, secondaryValue interface{}) (string, string, error) {
-	_, primaryQueryStr, _, secondaryQueryStr, err := queryMpx(ctx, b.RunnerMpx, b.PrimaryEventReceiver, b.SecondaryEventReceiver, b, b.PrimaryDialect, b.SecondaryDialect, primaryValue, secondaryValue)
-	return primaryQueryStr, secondaryQueryStr, err
+func (b *InsertStmtMpx) LoadContextDebug(ctx context.Context, primaryValue, secondaryValue interface{}) (string, AsyncCountChan, error) {
+	_, primaryQueryStr, secondaryAsyncCountChan, err := queryMpx(ctx, b.RunnerMpx, b.PrimaryEventReceiver, b.SecondaryEventReceiver, b, b.PrimaryDialect, b.SecondaryDialect, primaryValue, secondaryValue)
+	return primaryQueryStr, secondaryAsyncCountChan, err
 }
 
-func (b *InsertStmtMpx) Load(primaryValue, secondaryValue interface{}) error {
+func (b *InsertStmtMpx) Load(primaryValue, secondaryValue interface{}) (AsyncCountChan, error) {
 	return b.LoadContext(context.Background(), primaryValue, secondaryValue)
 }

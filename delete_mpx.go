@@ -158,15 +158,15 @@ func (b *DeleteStmtMpx) Comment(comment string) *DeleteStmtMpx {
 	return b
 }
 
-func (b *DeleteStmtMpx) Exec() (sql.Result, sql.Result, error) {
+func (b *DeleteStmtMpx) Exec() (sql.Result, AsyncResultChan, error) {
 	return b.ExecContext(context.Background())
 }
 
-func (b *DeleteStmtMpx) ExecContext(ctx context.Context) (sql.Result, sql.Result, error) {
-	primaryRes, _, secondaryRes, _, err := execMpx(ctx, b.RunnerMpx, b.PrimaryEventReceiver, b.SecondaryEventReceiver, b, b.PrimaryDialect, b.SecondaryDialect)
-	return primaryRes, secondaryRes, err
+func (b *DeleteStmtMpx) ExecContext(ctx context.Context) (sql.Result, AsyncResultChan, error) {
+	primaryRes, _, secondaryAsyncResultChan, err := execMpx(ctx, b.RunnerMpx, b.PrimaryEventReceiver, b.SecondaryEventReceiver, b, b.PrimaryDialect, b.SecondaryDialect)
+	return primaryRes, secondaryAsyncResultChan, err
 }
 
-func (b *DeleteStmtMpx) ExecContextDebug(ctx context.Context) (sql.Result, string, sql.Result, string, error) {
+func (b *DeleteStmtMpx) ExecContextDebug(ctx context.Context) (sql.Result, string, AsyncResultChan, error) {
 	return execMpx(ctx, b.RunnerMpx, b.PrimaryEventReceiver, b.SecondaryEventReceiver, b, b.PrimaryDialect, b.SecondaryDialect)
 }

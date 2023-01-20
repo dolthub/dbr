@@ -222,30 +222,30 @@ func (b *UpdateStmtMpx) Comment(comment string) *UpdateStmtMpx {
 	return b
 }
 
-func (b *UpdateStmtMpx) Exec() (sql.Result, sql.Result, error) {
+func (b *UpdateStmtMpx) Exec() (sql.Result, AsyncResultChan, error) {
 	return b.ExecContext(context.Background())
 }
 
-func (b *UpdateStmtMpx) ExecContext(ctx context.Context) (sql.Result, sql.Result, error) {
-	primaryRes, _, secondaryRes, _, err := execMpx(ctx, b.RunnerMpx, b.PrimaryEventReceiver, b.SecondaryEventReceiver, b, b.PrimaryDialect, b.SecondaryDialect)
-	return primaryRes, secondaryRes, err
+func (b *UpdateStmtMpx) ExecContext(ctx context.Context) (sql.Result, AsyncResultChan, error) {
+	primaryRes, _, asyncResultChan, err := execMpx(ctx, b.RunnerMpx, b.PrimaryEventReceiver, b.SecondaryEventReceiver, b, b.PrimaryDialect, b.SecondaryDialect)
+	return primaryRes, asyncResultChan, err
 }
 
-func (b *UpdateStmtMpx) ExecContextDebug(ctx context.Context) (sql.Result, string, sql.Result, string, error) {
+func (b *UpdateStmtMpx) ExecContextDebug(ctx context.Context) (sql.Result, string, AsyncResultChan, error) {
 	return execMpx(ctx, b.RunnerMpx, b.PrimaryEventReceiver, b.SecondaryEventReceiver, b, b.PrimaryDialect, b.SecondaryDialect)
 }
 
-func (b *UpdateStmtMpx) LoadContext(ctx context.Context, primaryValue, secondaryValue interface{}) error {
-	_, _, _, _, err := queryMpx(ctx, b.RunnerMpx, b.PrimaryEventReceiver, b.SecondaryEventReceiver, b, b.PrimaryDialect, b.SecondaryDialect, primaryValue, secondaryValue)
-	return err
+func (b *UpdateStmtMpx) LoadContext(ctx context.Context, primaryValue, secondaryValue interface{}) (AsyncCountChan, error) {
+	_, _, secondaryAsyncCountChan, err := queryMpx(ctx, b.RunnerMpx, b.PrimaryEventReceiver, b.SecondaryEventReceiver, b, b.PrimaryDialect, b.SecondaryDialect, primaryValue, secondaryValue)
+	return secondaryAsyncCountChan, err
 }
 
-func (b *UpdateStmtMpx) LoadContextDebug(ctx context.Context, primaryValue, secondaryValue interface{}) (string, string, error) {
-	_, primaryQueryStr, _, secondaryQueryStr, err := queryMpx(ctx, b.RunnerMpx, b.PrimaryEventReceiver, b.SecondaryEventReceiver, b, b.PrimaryDialect, b.SecondaryDialect, primaryValue, secondaryValue)
-	return primaryQueryStr, secondaryQueryStr, err
+func (b *UpdateStmtMpx) LoadContextDebug(ctx context.Context, primaryValue, secondaryValue interface{}) (string, AsyncCountChan, error) {
+	_, primaryQueryStr, secondaryAsyncCountChan, err := queryMpx(ctx, b.RunnerMpx, b.PrimaryEventReceiver, b.SecondaryEventReceiver, b, b.PrimaryDialect, b.SecondaryDialect, primaryValue, secondaryValue)
+	return primaryQueryStr, secondaryAsyncCountChan, err
 }
 
-func (b *UpdateStmtMpx) Load(primaryValue, secondaryValue interface{}) error {
+func (b *UpdateStmtMpx) Load(primaryValue, secondaryValue interface{}) (AsyncCountChan, error) {
 	return b.LoadContext(context.Background(), primaryValue, secondaryValue)
 }
 

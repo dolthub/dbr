@@ -4,7 +4,9 @@ package dbr
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"golang.org/x/sync/errgroup"
 	"time"
 
 	"github.com/gocraft/dbr/v2/dialect"
@@ -260,7 +262,28 @@ func exec(ctx context.Context, runner runner, log EventReceiver, builder Builder
 	return result, query, nil
 }
 
-// TODO: refactor
+type AsyncResult struct {
+	Query   string
+	ErrChan chan error
+	Result  sql.Result
+}
+
+type AsyncRows struct {
+	Query   string
+	ErrChan chan error
+	Rows    *sql.Rows
+}
+
+type AsyncCount struct {
+	Query   string
+	ErrChan chan error
+	Count   int
+}
+
+type AsyncResultChan chan *AsyncResult
+type AsyncRowsChan chan *AsyncRows
+type AsyncCountChan chan *AsyncCount
+
 func execMpx(
 	ctx context.Context,
 	runnerMpx RunnerMpx,
@@ -268,10 +291,8 @@ func execMpx(
 	secondaryLog EventReceiver,
 	builder Builder,
 	primaryD,
-	secondaryD Dialect) (sql.Result, string, sql.Result, string, error) {
-
+	secondaryD Dialect) (sql.Result, string, AsyncResultChan, error) {
 	primaryTimeout := runnerMpx.GetPrimaryTimeout()
-	secondaryTimeout := runnerMpx.GetSecondaryTimeout()
 
 	baseCtx := ctx
 
@@ -284,15 +305,6 @@ func execMpx(
 		primaryCtx = baseCtx
 	}
 
-	var secondaryCtx context.Context
-	if secondaryTimeout > 0 {
-		var cancel func()
-		secondaryCtx, cancel = context.WithTimeout(baseCtx, secondaryTimeout)
-		defer cancel()
-	} else {
-		secondaryCtx = baseCtx
-	}
-
 	primaryI := interpolator{
 		Buffer:       NewBuffer(),
 		Dialect:      primaryD,
@@ -302,7 +314,7 @@ func execMpx(
 	err := primaryI.encodePlaceholder(builder, true)
 	primaryQuery, primaryValue := primaryI.String(), primaryI.Value()
 	if err != nil {
-		return nil, primaryQuery, nil, "", primaryLog.EventErrKv("dbr.primary.exec.interpolate", err, kvs{
+		return nil, primaryQuery, nil, primaryLog.EventErrKv("dbr.primary.exec.interpolate", err, kvs{
 			"sql":  primaryQuery,
 			"args": fmt.Sprint(primaryValue),
 		})
@@ -321,55 +333,89 @@ func execMpx(
 		defer primaryTraceImpl.SpanFinish(primaryCtx)
 	}
 
-	secondaryI := interpolator{
-		Buffer:       NewBuffer(),
-		Dialect:      secondaryD,
-		IgnoreBinary: true,
-	}
-
-	err = secondaryI.encodePlaceholder(builder, true)
-	secondaryQuery, secondaryValue := secondaryI.String(), secondaryI.Value()
-	if err != nil {
-		return nil, "", nil, secondaryQuery, secondaryLog.EventErrKv("dbr.secondary.exec.interpolate", err, kvs{
-			"sql":  secondaryQuery,
-			"args": fmt.Sprint(secondaryValue),
-		})
-	}
-
-	secondaryStartTime := time.Now()
-	defer func() {
-		secondaryLog.TimingKv("dbr.secondary.exec", time.Since(secondaryStartTime).Nanoseconds(), kvs{
-			"sql": secondaryQuery,
-		})
-	}()
-
-	secondaryTraceImpl, secondaryHasTracingImpl := secondaryLog.(TracingEventReceiver)
-	if secondaryHasTracingImpl {
-		secondaryCtx = secondaryTraceImpl.SpanStart(secondaryCtx, "dbr.secondary.exec", secondaryQuery)
-		defer secondaryTraceImpl.SpanFinish(secondaryCtx)
-	}
-
 	primaryResults, err := runnerMpx.PrimaryExecContext(primaryCtx, primaryQuery, primaryValue...)
 	if err != nil {
 		if primaryHasTracingImpl {
 			primaryTraceImpl.SpanError(ctx, err)
 		}
-		return primaryResults, primaryQuery, nil, "", primaryLog.EventErrKv("dbr.primary.exec.exec", err, kvs{
+		return primaryResults, primaryQuery, nil, primaryLog.EventErrKv("dbr.primary.exec.exec", err, kvs{
 			"sql": primaryQuery,
 		})
 	}
 
-	secondaryResults, err := runnerMpx.SecondaryExecContext(secondaryCtx, secondaryQuery, secondaryValue...)
-	if err != nil {
-		if secondaryHasTracingImpl {
-			secondaryTraceImpl.SpanError(ctx, err)
-		}
-		return secondaryResults, secondaryQuery, nil, "", secondaryLog.EventErrKv("dbr.secondary.exec.exec", err, kvs{
-			"sql": secondaryQuery,
-		})
-	}
+	secondaryErrChan := make(chan error)
 
-	return primaryResults, primaryQuery, secondaryResults, secondaryQuery, nil
+	secondaryAsyncResultChan := make(AsyncResultChan)
+	eg, egCtx := errgroup.WithContext(baseCtx)
+
+	go func() {
+		defer close(secondaryErrChan)
+		secondaryErrChan <- eg.Wait()
+	}()
+
+	eg.Go(func() error {
+		defer close(secondaryAsyncResultChan)
+
+		secondaryTimeout := runnerMpx.GetSecondaryTimeout()
+
+		var secondaryCtx context.Context
+		if secondaryTimeout > 0 {
+			var cancel func()
+			secondaryCtx, cancel = context.WithTimeout(egCtx, secondaryTimeout)
+			defer cancel()
+		} else {
+			secondaryCtx = egCtx
+		}
+
+		secondaryI := interpolator{
+			Buffer:       NewBuffer(),
+			Dialect:      secondaryD,
+			IgnoreBinary: true,
+		}
+
+		serr := secondaryI.encodePlaceholder(builder, true)
+		secondaryQuery, secondaryValue := secondaryI.String(), secondaryI.Value()
+		if serr != nil {
+			return secondaryLog.EventErrKv("dbr.secondary.exec.interpolate", serr, kvs{
+				"sql":  secondaryQuery,
+				"args": fmt.Sprint(secondaryValue),
+			})
+		}
+
+		secondaryStartTime := time.Now()
+		defer func() {
+			secondaryLog.TimingKv("dbr.secondary.exec", time.Since(secondaryStartTime).Nanoseconds(), kvs{
+				"sql": secondaryQuery,
+			})
+		}()
+
+		secondaryTraceImpl, secondaryHasTracingImpl := secondaryLog.(TracingEventReceiver)
+		if secondaryHasTracingImpl {
+			secondaryCtx = secondaryTraceImpl.SpanStart(secondaryCtx, "dbr.secondary.exec", secondaryQuery)
+			defer secondaryTraceImpl.SpanFinish(secondaryCtx)
+		}
+
+		secondaryResults, serr := runnerMpx.SecondaryExecContext(secondaryCtx, secondaryQuery, secondaryValue...)
+		if serr != nil {
+			if secondaryHasTracingImpl {
+				secondaryTraceImpl.SpanError(ctx, serr)
+			}
+			return secondaryLog.EventErrKv("dbr.secondary.exec.exec", serr, kvs{
+				"sql": secondaryQuery,
+			})
+		}
+
+		ar := &AsyncResult{
+			Result:  secondaryResults,
+			Query:   secondaryQuery,
+			ErrChan: secondaryErrChan,
+		}
+
+		secondaryAsyncResultChan <- ar
+		return nil
+	})
+
+	return primaryResults, primaryQuery, secondaryAsyncResultChan, nil
 }
 
 func queryRows(ctx context.Context, runner runner, log EventReceiver, builder Builder, d Dialect) (string, *sql.Rows, error) {
@@ -437,7 +483,7 @@ func query(ctx context.Context, runner runner, log EventReceiver, builder Builde
 	return count, query, nil
 }
 
-func queryRowsMpx(ctx context.Context, runnerMpx RunnerMpx, primaryLog, secondaryLog EventReceiver, builder Builder, primaryD, secondaryD Dialect) (string, *sql.Rows, string, *sql.Rows, error) {
+func queryRowsMpx(ctx context.Context, runnerMpx RunnerMpx, primaryLog, secondaryLog EventReceiver, builder Builder, primaryD, secondaryD Dialect) (string, *sql.Rows, AsyncRowsChan, error) {
 	// discard the timeout set in the runner, the context should not be canceled
 	// implicitly here but explicitly by the caller since the returned *sql.Rows
 	// may still listening to the context
@@ -449,23 +495,9 @@ func queryRowsMpx(ctx context.Context, runnerMpx RunnerMpx, primaryLog, secondar
 	err := primaryI.encodePlaceholder(builder, true)
 	primaryQuery, primaryValue := primaryI.String(), primaryI.Value()
 	if err != nil {
-		return primaryQuery, nil, "", nil, primaryLog.EventErrKv("dbr.primary.select.interpolate", err, kvs{
+		return primaryQuery, nil, nil, primaryLog.EventErrKv("dbr.primary.select.interpolate", err, kvs{
 			"sql":  primaryQuery,
 			"args": fmt.Sprint(primaryValue),
-		})
-	}
-
-	secondaryI := interpolator{
-		Buffer:       NewBuffer(),
-		Dialect:      secondaryD,
-		IgnoreBinary: true,
-	}
-	err = secondaryI.encodePlaceholder(builder, true)
-	secondaryQuery, secondaryValue := secondaryI.String(), secondaryI.Value()
-	if err != nil {
-		return secondaryQuery, nil, "", nil, secondaryLog.EventErrKv("dbr.secondary.select.interpolate", err, kvs{
-			"sql":  secondaryQuery,
-			"args": fmt.Sprint(secondaryValue),
 		})
 	}
 
@@ -473,13 +505,6 @@ func queryRowsMpx(ctx context.Context, runnerMpx RunnerMpx, primaryLog, secondar
 	defer func() {
 		primaryLog.TimingKv("dbr.primary.select", time.Since(primaryStartTime).Nanoseconds(), kvs{
 			"sql": primaryQuery,
-		})
-	}()
-
-	secondaryStartTime := time.Now()
-	defer func() {
-		secondaryLog.TimingKv("dbr.secondary.select", time.Since(secondaryStartTime).Nanoseconds(), kvs{
-			"sql": secondaryQuery,
 		})
 	}()
 
@@ -494,31 +519,74 @@ func queryRowsMpx(ctx context.Context, runnerMpx RunnerMpx, primaryLog, secondar
 		if primaryHasTracingImpl {
 			primaryTraceImpl.SpanError(ctx, err)
 		}
-		return primaryQuery, nil, "", nil, primaryLog.EventErrKv("dbr.primary.select.load.query", err, kvs{
+		return primaryQuery, nil, nil, primaryLog.EventErrKv("dbr.primary.select.load.query", err, kvs{
 			"sql": primaryQuery,
 		})
 	}
 
-	secondaryTraceImpl, secondaryHasTracingImpl := secondaryLog.(TracingEventReceiver)
-	if secondaryHasTracingImpl {
-		ctx = secondaryTraceImpl.SpanStart(ctx, "dbr.secondary.select", secondaryQuery)
-		defer secondaryTraceImpl.SpanFinish(ctx)
-	}
+	secondaryErrChan := make(chan error)
 
-	secondaryRows, err := runnerMpx.SecondaryQueryContext(ctx, secondaryQuery, secondaryValue...)
-	if err != nil {
-		if secondaryHasTracingImpl {
-			secondaryTraceImpl.SpanError(ctx, err)
+	secondaryAsyncRowsChan := make(AsyncRowsChan)
+	eg, egCtx := errgroup.WithContext(ctx)
+
+	go func() {
+		defer close(secondaryErrChan)
+		secondaryErrChan <- eg.Wait()
+	}()
+
+	eg.Go(func() error {
+		secondaryI := interpolator{
+			Buffer:       NewBuffer(),
+			Dialect:      secondaryD,
+			IgnoreBinary: true,
 		}
-		return secondaryQuery, nil, "", nil, secondaryLog.EventErrKv("dbr.secondary.select.load.query", err, kvs{
-			"sql": secondaryQuery,
-		})
-	}
 
-	return primaryQuery, primaryRows, secondaryQuery, secondaryRows, nil
+		serr := secondaryI.encodePlaceholder(builder, true)
+		secondaryQuery, secondaryValue := secondaryI.String(), secondaryI.Value()
+		if serr != nil {
+			return secondaryLog.EventErrKv("dbr.secondary.select.interpolate", serr, kvs{
+				"sql":  secondaryQuery,
+				"args": fmt.Sprint(secondaryValue),
+			})
+		}
+
+		secondaryStartTime := time.Now()
+		defer func() {
+			secondaryLog.TimingKv("dbr.secondary.select", time.Since(secondaryStartTime).Nanoseconds(), kvs{
+				"sql": secondaryQuery,
+			})
+		}()
+
+		secondaryTraceImpl, secondaryHasTracingImpl := secondaryLog.(TracingEventReceiver)
+		if secondaryHasTracingImpl {
+			ctx = secondaryTraceImpl.SpanStart(egCtx, "dbr.secondary.select", secondaryQuery)
+			defer secondaryTraceImpl.SpanFinish(egCtx)
+		}
+
+		secondaryRows, serr := runnerMpx.SecondaryQueryContext(egCtx, secondaryQuery, secondaryValue...)
+		if serr != nil {
+			if secondaryHasTracingImpl {
+				secondaryTraceImpl.SpanError(egCtx, serr)
+			}
+			return secondaryLog.EventErrKv("dbr.secondary.select.load.query", serr, kvs{
+				"sql": secondaryQuery,
+			})
+		}
+
+		ar := &AsyncRows{
+			Rows:    secondaryRows,
+			Query:   secondaryQuery,
+			ErrChan: secondaryErrChan,
+		}
+
+		secondaryAsyncRowsChan <- ar
+		return nil
+	})
+
+	return primaryQuery, primaryRows, secondaryAsyncRowsChan, nil
 }
 
-func queryMpx(ctx context.Context, runnerMpx RunnerMpx, primaryLog, secondaryLog EventReceiver, builder Builder, primaryD, secondaryD Dialect, primaryDest, secondaryDest interface{}) (int, string, int, string, error) {
+func queryMpx(ctx context.Context, runnerMpx RunnerMpx, primaryLog, secondaryLog EventReceiver, builder Builder, primaryD, secondaryD Dialect, primaryDest, secondaryDest interface{}) (int, string, AsyncCountChan, error) {
 	primaryTimeout := runnerMpx.GetPrimaryTimeout()
 	if primaryTimeout > 0 {
 		var cancel func()
@@ -533,22 +601,69 @@ func queryMpx(ctx context.Context, runnerMpx RunnerMpx, primaryLog, secondaryLog
 		defer cancel()
 	}
 
-	primaryQuery, primaryRows, secondaryQuery, secondaryRows, err := queryRowsMpx(ctx, runnerMpx, primaryLog, secondaryLog, builder, primaryD, secondaryD)
+	primaryQuery, primaryRows, secondaryAsyncRowsChan, err := queryRowsMpx(ctx, runnerMpx, primaryLog, secondaryLog, builder, primaryD, secondaryD)
 	if err != nil {
-		return 0, primaryQuery, 0, secondaryQuery, err
+		return 0, primaryQuery, nil, err
 	}
 	primaryCount, err := Load(primaryRows, primaryDest)
 	if err != nil {
-		return 0, primaryQuery, 0, "", primaryLog.EventErrKv("dbr.primary.select.load.scan", err, kvs{
+		return 0, primaryQuery, nil, primaryLog.EventErrKv("dbr.primary.select.load.scan", err, kvs{
 			"sql": primaryQuery,
 		})
 	}
-	secondaryCount, err := Load(secondaryRows, secondaryDest)
-	if err != nil {
-		return 0, secondaryQuery, 0, "", secondaryLog.EventErrKv("dbr.secondary.select.load.scan", err, kvs{
-			"sql": secondaryQuery,
-		})
-	}
 
-	return primaryCount, primaryQuery, secondaryCount, secondaryQuery, nil
+	secondaryErrChan := make(chan error)
+
+	secondaryAsyncCountChan := make(AsyncCountChan)
+	eg, egCtx := errgroup.WithContext(ctx)
+
+	go func() {
+		defer close(secondaryErrChan)
+		secondaryErrChan <- eg.Wait()
+	}()
+
+	eg.Go(func() error {
+		for {
+			select {
+			case <-egCtx.Done():
+				return egCtx.Err()
+			case asyncRow, ok := <-secondaryAsyncRowsChan:
+				if !ok {
+					secondaryErrChan <- errors.New("failed to read secondary asyncRow")
+				}
+
+				for {
+					select {
+					case <-egCtx.Done():
+						return egCtx.Err()
+					case rerr, ok := <-asyncRow.ErrChan:
+						if !ok {
+							secondaryErrChan <- errors.New("failed to err secondary errChan")
+						}
+						if rerr != nil {
+							return rerr
+						}
+					default:
+						secondaryCount, rerr := Load(asyncRow.Rows, secondaryDest)
+						if rerr != nil {
+							return secondaryLog.EventErrKv("dbr.secondary.select.load.scan", rerr, kvs{
+								"sql": asyncRow.Query,
+							})
+						}
+
+						ac := &AsyncCount{
+							Count:   secondaryCount,
+							Query:   asyncRow.Query,
+							ErrChan: secondaryErrChan,
+						}
+
+						secondaryAsyncCountChan <- ac
+						return nil
+					}
+				}
+			}
+		}
+	})
+
+	return primaryCount, primaryQuery, secondaryAsyncCountChan, nil
 }
