@@ -231,12 +231,28 @@ func (sess *Session) Select(column ...string) *SelectStmt {
 	return b
 }
 
+func (sessMpx *SessionMpx) Select(column ...string) *SelectBuilder {
+	b := Select(prepareSelect(column)...)
+	b.runner = sessMpx
+	b.EventReceiver = sessMpx.PrimaryEventReceiver
+	b.Dialect = sessMpx.PrimaryConn.Dialect
+	return b
+}
+
 // Select creates a SelectStmt.
 func (tx *Tx) Select(column ...string) *SelectStmt {
 	b := Select(prepareSelect(column)...)
 	b.runner = tx
 	b.EventReceiver = tx.EventReceiver
 	b.Dialect = tx.Dialect
+	return b
+}
+
+func (txMpx *TxMpx) Select(column ...string) *SelectBuilder {
+	b := Select(prepareSelect(column)...)
+	b.runner = txMpx
+	b.EventReceiver = txMpx.PrimaryTx.EventReceiver
+	b.Dialect = txMpx.PrimaryTx.Dialect
 	return b
 }
 
@@ -261,12 +277,28 @@ func (sess *Session) SelectBySql(query string, value ...interface{}) *SelectStmt
 	return b
 }
 
+func (sessMpx *SessionMpx) SelectBySql(query string, value ...interface{}) *SelectBuilder {
+	b := SelectBySql(query, value...)
+	b.runner = sessMpx
+	b.EventReceiver = sessMpx.PrimaryEventReceiver
+	b.Dialect = sessMpx.PrimaryConn.Dialect
+	return b
+}
+
 // SelectBySql creates a SelectStmt from raw query.
 func (tx *Tx) SelectBySql(query string, value ...interface{}) *SelectStmt {
 	b := SelectBySql(query, value...)
 	b.runner = tx
 	b.EventReceiver = tx.EventReceiver
 	b.Dialect = tx.Dialect
+	return b
+}
+
+func (txMpx *TxMpx) SelectBySql(query string, value ...interface{}) *SelectBuilder {
+	b := SelectBySql(query, value...)
+	b.runner = txMpx
+	b.EventReceiver = txMpx.PrimaryTx.EventReceiver
+	b.Dialect = txMpx.PrimaryTx.Dialect
 	return b
 }
 

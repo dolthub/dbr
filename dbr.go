@@ -36,6 +36,23 @@ func Open(driver, dsn string, log EventReceiver) (*Connection, error) {
 	return &Connection{DB: conn, EventReceiver: log, Dialect: d}, nil
 }
 
+// OpenMpx creates a ConnectionMpx.
+// log can be nil to ignore logging.
+func OpenMpx(primaryDriver, primaryDsn, secondaryDriver, secondaryDsn string, primaryLog, secondaryLog EventReceiver) (*ConnectionMpx, error) {
+	primary, err := Open(primaryDriver, primaryDsn, primaryLog)
+	if err != nil {
+		return nil, err
+	}
+	secondary, err := Open(secondaryDriver, secondaryDsn, secondaryLog)
+	if err != nil {
+		return nil, err
+	}
+	return &ConnectionMpx{
+		PrimaryConn:   primary,
+		SecondaryConn: secondary,
+	}, nil
+}
+
 const (
 	placeholder = "?"
 )
@@ -46,6 +63,12 @@ type Connection struct {
 	*sql.DB
 	Dialect
 	EventReceiver
+}
+
+// ConnectionMpx multiplexes two connections
+type ConnectionMpx struct {
+	PrimaryConn   *Connection
+	SecondaryConn *Connection
 }
 
 // Session represents a business unit of execution.
@@ -63,6 +86,51 @@ type Session struct {
 	Timeout time.Duration
 }
 
+// SessionMpx contains a ConnectionMpx
+type SessionMpx struct {
+	*ConnectionMpx
+	PrimaryEventReceiver   EventReceiver
+	SecondaryEventReceiver EventReceiver
+	PrimaryTimeout         time.Duration
+	SecondaryTimeout       time.Duration
+}
+
+func (sessMpx *SessionMpx) GetTimeout() time.Duration {
+	return sessMpx.GetPrimaryTimeout()
+}
+
+func (sessMpx *SessionMpx) ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
+	return sessMpx.PrimaryConn.ExecContext(ctx, query, args...)
+}
+
+func (sessMpx *SessionMpx) QueryContext(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error) {
+	return sessMpx.PrimaryConn.QueryContext(ctx, query, args...)
+}
+
+func (smpx *SessionMpx) GetPrimaryTimeout() time.Duration {
+	return smpx.PrimaryTimeout
+}
+
+func (smpx *SessionMpx) GetSecondaryTimeout() time.Duration {
+	return smpx.SecondaryTimeout
+}
+
+func (smpx *SessionMpx) PrimaryExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
+	return smpx.PrimaryConn.ExecContext(ctx, query, args...)
+}
+
+func (smpx *SessionMpx) SecondaryExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
+	return smpx.SecondaryConn.ExecContext(ctx, query, args...)
+}
+
+func (smpx *SessionMpx) PrimaryQueryContext(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error) {
+	return smpx.PrimaryConn.QueryContext(ctx, query, args...)
+}
+
+func (smpx *SessionMpx) SecondaryQueryContext(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error) {
+	return smpx.SecondaryConn.QueryContext(ctx, query, args...)
+}
+
 // GetTimeout returns current timeout enforced in session.
 func (sess *Session) GetTimeout() time.Duration {
 	return sess.Timeout
@@ -77,10 +145,25 @@ func (conn *Connection) NewSession(log EventReceiver) *Session {
 	return &Session{Connection: conn, EventReceiver: log}
 }
 
+// NewSessionMpx instantiates a SessionMpx from ConnectionMpx.
+// If log is nil, ConnectionMpx's EventReceivers are used.
+func (cmpx *ConnectionMpx) NewSessionMpx(primaryLog, secondaryLog EventReceiver) *SessionMpx {
+	if primaryLog == nil {
+		primaryLog = cmpx.PrimaryConn.EventReceiver // Use parent instrumentation
+	}
+	if secondaryLog == nil {
+		secondaryLog = cmpx.SecondaryConn.EventReceiver
+	}
+	return &SessionMpx{ConnectionMpx: cmpx, PrimaryEventReceiver: primaryLog, SecondaryEventReceiver: secondaryLog}
+}
+
 // Ensure that tx and session are session runner
+// ensure the txmpx and sessionmpx are runnermpx
 var (
-	_ SessionRunner = (*Tx)(nil)
-	_ SessionRunner = (*Session)(nil)
+	_ SessionRunner    = (*Tx)(nil)
+	_ SessionRunner    = (*Session)(nil)
+	_ SessionRunnerMpx = (*TxMpx)(nil)
+	_ SessionRunnerMpx = (*SessionMpx)(nil)
 )
 
 // SessionRunner can do anything that a Session can except start a transaction.
@@ -99,10 +182,35 @@ type SessionRunner interface {
 	DeleteBySql(query string, value ...interface{}) *DeleteBuilder
 }
 
+// SessionRunnerMpx can do anything that a Session can except start a transaction.
+// Both SessionMpx and TxMpx implements this interface.
+type SessionRunnerMpx interface {
+	Select(column ...string) *SelectBuilder
+	SelectBySql(query string, value ...interface{}) *SelectBuilder
+
+	InsertInto(table string) *InsertBuilderMpx
+	InsertBySql(query string, value ...interface{}) *InsertBuilderMpx
+
+	Update(table string) *UpdateBuilderMpx
+	UpdateBySql(query string, value ...interface{}) *UpdateBuilderMpx
+
+	DeleteFrom(table string) *DeleteBuilderMpx
+	DeleteBySql(query string, value ...interface{}) *DeleteBuilderMpx
+}
+
 type runner interface {
 	GetTimeout() time.Duration
 	ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error)
 	QueryContext(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error)
+}
+
+type RunnerMpx interface {
+	GetPrimaryTimeout() time.Duration
+	GetSecondaryTimeout() time.Duration
+	PrimaryExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error)
+	SecondaryExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error)
+	PrimaryQueryContext(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error)
+	SecondaryQueryContext(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error)
 }
 
 func exec(ctx context.Context, runner runner, log EventReceiver, builder Builder, d Dialect) (sql.Result, string, error) {
@@ -150,6 +258,118 @@ func exec(ctx context.Context, runner runner, log EventReceiver, builder Builder
 		})
 	}
 	return result, query, nil
+}
+
+// TODO: refactor
+func execMpx(
+	ctx context.Context,
+	runnerMpx RunnerMpx,
+	primaryLog,
+	secondaryLog EventReceiver,
+	builder Builder,
+	primaryD,
+	secondaryD Dialect) (sql.Result, string, sql.Result, string, error) {
+
+	primaryTimeout := runnerMpx.GetPrimaryTimeout()
+	secondaryTimeout := runnerMpx.GetSecondaryTimeout()
+
+	baseCtx := ctx
+
+	var primaryCtx context.Context
+	if primaryTimeout > 0 {
+		var cancel func()
+		primaryCtx, cancel = context.WithTimeout(baseCtx, primaryTimeout)
+		defer cancel()
+	} else {
+		primaryCtx = baseCtx
+	}
+
+	var secondaryCtx context.Context
+	if secondaryTimeout > 0 {
+		var cancel func()
+		secondaryCtx, cancel = context.WithTimeout(baseCtx, secondaryTimeout)
+		defer cancel()
+	} else {
+		secondaryCtx = baseCtx
+	}
+
+	primaryI := interpolator{
+		Buffer:       NewBuffer(),
+		Dialect:      primaryD,
+		IgnoreBinary: true,
+	}
+
+	err := primaryI.encodePlaceholder(builder, true)
+	primaryQuery, primaryValue := primaryI.String(), primaryI.Value()
+	if err != nil {
+		return nil, primaryQuery, nil, "", primaryLog.EventErrKv("dbr.primary.exec.interpolate", err, kvs{
+			"sql":  primaryQuery,
+			"args": fmt.Sprint(primaryValue),
+		})
+	}
+
+	primaryStartTime := time.Now()
+	defer func() {
+		primaryLog.TimingKv("dbr.primary.exec", time.Since(primaryStartTime).Nanoseconds(), kvs{
+			"sql": primaryQuery,
+		})
+	}()
+
+	primaryTraceImpl, primaryHasTracingImpl := primaryLog.(TracingEventReceiver)
+	if primaryHasTracingImpl {
+		primaryCtx = primaryTraceImpl.SpanStart(primaryCtx, "dbr.primary.exec", primaryQuery)
+		defer primaryTraceImpl.SpanFinish(primaryCtx)
+	}
+
+	secondaryI := interpolator{
+		Buffer:       NewBuffer(),
+		Dialect:      secondaryD,
+		IgnoreBinary: true,
+	}
+
+	err = secondaryI.encodePlaceholder(builder, true)
+	secondaryQuery, secondaryValue := secondaryI.String(), secondaryI.Value()
+	if err != nil {
+		return nil, "", nil, secondaryQuery, secondaryLog.EventErrKv("dbr.secondary.exec.interpolate", err, kvs{
+			"sql":  secondaryQuery,
+			"args": fmt.Sprint(secondaryValue),
+		})
+	}
+
+	secondaryStartTime := time.Now()
+	defer func() {
+		secondaryLog.TimingKv("dbr.secondary.exec", time.Since(secondaryStartTime).Nanoseconds(), kvs{
+			"sql": secondaryQuery,
+		})
+	}()
+
+	secondaryTraceImpl, secondaryHasTracingImpl := secondaryLog.(TracingEventReceiver)
+	if secondaryHasTracingImpl {
+		secondaryCtx = secondaryTraceImpl.SpanStart(secondaryCtx, "dbr.secondary.exec", secondaryQuery)
+		defer secondaryTraceImpl.SpanFinish(secondaryCtx)
+	}
+
+	primaryResults, err := runnerMpx.PrimaryExecContext(primaryCtx, primaryQuery, primaryValue...)
+	if err != nil {
+		if primaryHasTracingImpl {
+			primaryTraceImpl.SpanError(ctx, err)
+		}
+		return primaryResults, primaryQuery, nil, "", primaryLog.EventErrKv("dbr.primary.exec.exec", err, kvs{
+			"sql": primaryQuery,
+		})
+	}
+
+	secondaryResults, err := runnerMpx.SecondaryExecContext(secondaryCtx, secondaryQuery, secondaryValue...)
+	if err != nil {
+		if secondaryHasTracingImpl {
+			secondaryTraceImpl.SpanError(ctx, err)
+		}
+		return secondaryResults, secondaryQuery, nil, "", secondaryLog.EventErrKv("dbr.secondary.exec.exec", err, kvs{
+			"sql": secondaryQuery,
+		})
+	}
+
+	return primaryResults, primaryQuery, secondaryResults, secondaryQuery, nil
 }
 
 func queryRows(ctx context.Context, runner runner, log EventReceiver, builder Builder, d Dialect) (string, *sql.Rows, error) {
@@ -215,4 +435,120 @@ func query(ctx context.Context, runner runner, log EventReceiver, builder Builde
 		})
 	}
 	return count, query, nil
+}
+
+func queryRowsMpx(ctx context.Context, runnerMpx RunnerMpx, primaryLog, secondaryLog EventReceiver, builder Builder, primaryD, secondaryD Dialect) (string, *sql.Rows, string, *sql.Rows, error) {
+	// discard the timeout set in the runner, the context should not be canceled
+	// implicitly here but explicitly by the caller since the returned *sql.Rows
+	// may still listening to the context
+	primaryI := interpolator{
+		Buffer:       NewBuffer(),
+		Dialect:      primaryD,
+		IgnoreBinary: true,
+	}
+	err := primaryI.encodePlaceholder(builder, true)
+	primaryQuery, primaryValue := primaryI.String(), primaryI.Value()
+	if err != nil {
+		return primaryQuery, nil, "", nil, primaryLog.EventErrKv("dbr.primary.select.interpolate", err, kvs{
+			"sql":  primaryQuery,
+			"args": fmt.Sprint(primaryValue),
+		})
+	}
+
+	secondaryI := interpolator{
+		Buffer:       NewBuffer(),
+		Dialect:      secondaryD,
+		IgnoreBinary: true,
+	}
+	err = secondaryI.encodePlaceholder(builder, true)
+	secondaryQuery, secondaryValue := secondaryI.String(), secondaryI.Value()
+	if err != nil {
+		return secondaryQuery, nil, "", nil, secondaryLog.EventErrKv("dbr.secondary.select.interpolate", err, kvs{
+			"sql":  secondaryQuery,
+			"args": fmt.Sprint(secondaryValue),
+		})
+	}
+
+	primaryStartTime := time.Now()
+	defer func() {
+		primaryLog.TimingKv("dbr.primary.select", time.Since(primaryStartTime).Nanoseconds(), kvs{
+			"sql": primaryQuery,
+		})
+	}()
+
+	secondaryStartTime := time.Now()
+	defer func() {
+		secondaryLog.TimingKv("dbr.secondary.select", time.Since(secondaryStartTime).Nanoseconds(), kvs{
+			"sql": secondaryQuery,
+		})
+	}()
+
+	primaryTraceImpl, primaryHasTracingImpl := primaryLog.(TracingEventReceiver)
+	if primaryHasTracingImpl {
+		ctx = primaryTraceImpl.SpanStart(ctx, "dbr.primary.select", primaryQuery)
+		defer primaryTraceImpl.SpanFinish(ctx)
+	}
+
+	primaryRows, err := runnerMpx.PrimaryQueryContext(ctx, primaryQuery, primaryValue...)
+	if err != nil {
+		if primaryHasTracingImpl {
+			primaryTraceImpl.SpanError(ctx, err)
+		}
+		return primaryQuery, nil, "", nil, primaryLog.EventErrKv("dbr.primary.select.load.query", err, kvs{
+			"sql": primaryQuery,
+		})
+	}
+
+	secondaryTraceImpl, secondaryHasTracingImpl := secondaryLog.(TracingEventReceiver)
+	if secondaryHasTracingImpl {
+		ctx = secondaryTraceImpl.SpanStart(ctx, "dbr.secondary.select", secondaryQuery)
+		defer secondaryTraceImpl.SpanFinish(ctx)
+	}
+
+	secondaryRows, err := runnerMpx.SecondaryQueryContext(ctx, secondaryQuery, secondaryValue...)
+	if err != nil {
+		if secondaryHasTracingImpl {
+			secondaryTraceImpl.SpanError(ctx, err)
+		}
+		return secondaryQuery, nil, "", nil, secondaryLog.EventErrKv("dbr.secondary.select.load.query", err, kvs{
+			"sql": secondaryQuery,
+		})
+	}
+
+	return primaryQuery, primaryRows, secondaryQuery, secondaryRows, nil
+}
+
+func queryMpx(ctx context.Context, runnerMpx RunnerMpx, primaryLog, secondaryLog EventReceiver, builder Builder, primaryD, secondaryD Dialect, primaryDest, secondaryDest interface{}) (int, string, int, string, error) {
+	primaryTimeout := runnerMpx.GetPrimaryTimeout()
+	if primaryTimeout > 0 {
+		var cancel func()
+		ctx, cancel = context.WithTimeout(ctx, primaryTimeout)
+		defer cancel()
+	}
+
+	secondaryTimeout := runnerMpx.GetSecondaryTimeout()
+	if secondaryTimeout > 0 {
+		var cancel func()
+		ctx, cancel = context.WithTimeout(ctx, secondaryTimeout)
+		defer cancel()
+	}
+
+	primaryQuery, primaryRows, secondaryQuery, secondaryRows, err := queryRowsMpx(ctx, runnerMpx, primaryLog, secondaryLog, builder, primaryD, secondaryD)
+	if err != nil {
+		return 0, primaryQuery, 0, secondaryQuery, err
+	}
+	primaryCount, err := Load(primaryRows, primaryDest)
+	if err != nil {
+		return 0, primaryQuery, 0, "", primaryLog.EventErrKv("dbr.primary.select.load.scan", err, kvs{
+			"sql": primaryQuery,
+		})
+	}
+	secondaryCount, err := Load(secondaryRows, secondaryDest)
+	if err != nil {
+		return 0, secondaryQuery, 0, "", secondaryLog.EventErrKv("dbr.secondary.select.load.scan", err, kvs{
+			"sql": secondaryQuery,
+		})
+	}
+
+	return primaryCount, primaryQuery, secondaryCount, secondaryQuery, nil
 }
