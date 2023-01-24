@@ -3,8 +3,6 @@ package dbr
 import (
 	"context"
 	"database/sql"
-	"errors"
-	"golang.org/x/sync/errgroup"
 	"reflect"
 	"strings"
 
@@ -23,14 +21,14 @@ type InsertStmtMpx struct {
 
 	raw
 
-	Table             string
-	Column            []string
-	Value             [][]interface{}
-	Ignored           bool
-	ReturnColumn      []string
-	PrimaryRecordID   *int64
-	SecondaryRecordID *int64
-	comments          Comments
+	Table        string
+	Column       []string
+	Value        [][]interface{}
+	Ignored      bool
+	ReturnColumn []string
+	RecordID     *int64
+	//SecondaryRecordID *int64
+	comments Comments
 }
 
 type InsertBuilderMpx = InsertStmtMpx
@@ -231,9 +229,7 @@ func (b *InsertStmtMpx) Record(structValue interface{}) *InsertStmtMpx {
 			switch idField := found[len(found)-1].(type) {
 			case reflect.Value:
 				if idField.Kind() == reflect.Int64 {
-					id := idField.Addr().Interface().(*int64)
-					b.PrimaryRecordID = id
-					b.SecondaryRecordID = id
+					b.RecordID = idField.Addr().Interface().(*int64)
 				}
 			}
 		}
@@ -278,64 +274,14 @@ func (b *InsertStmtMpx) ExecContextDebug(ctx context.Context) (sql.Result, strin
 		return nil, primaryQueryStr, nil, err
 	}
 
-	if b.PrimaryRecordID != nil {
+	if b.RecordID != nil {
 		if id, err := primaryResult.LastInsertId(); err == nil {
-			*b.PrimaryRecordID = id
+			*b.RecordID = id
 		}
-		b.PrimaryRecordID = nil
+		b.RecordID = nil
 	}
 
-	secondaryErrChan := make(chan error)
-	newSecondaryAsyncResultChan := make(AsyncResultChan)
-
-	eg, egCtx := errgroup.WithContext(ctx)
-
-	go func() {
-		defer close(secondaryErrChan)
-		secondaryErrChan <- eg.Wait()
-	}()
-
-	eg.Go(func() error {
-		defer close(newSecondaryAsyncResultChan)
-
-		for {
-			select {
-			case <-egCtx.Done():
-				return egCtx.Err()
-			case asyncResult, ok := <-secondaryAsyncResultChan:
-				if !ok {
-					return errors.New("failed to read result from asyncResultChan")
-				}
-
-				for {
-					select {
-					case <-egCtx.Done():
-						return egCtx.Err()
-					case rerr, ok := <-asyncResult.ErrChan:
-						if !ok {
-							return errors.New("failed to read error from errChan")
-						}
-						if rerr != nil {
-							return rerr
-						}
-
-					default:
-						if b.SecondaryRecordID != nil {
-							if id, rerr := asyncResult.Result.LastInsertId(); rerr == nil {
-								*b.SecondaryRecordID = id
-							}
-							b.SecondaryRecordID = nil
-						}
-
-						asyncResult.ErrChan = secondaryErrChan
-						newSecondaryAsyncResultChan <- asyncResult
-					}
-				}
-			}
-		}
-	})
-
-	return primaryResult, primaryQueryStr, newSecondaryAsyncResultChan, nil
+	return primaryResult, primaryQueryStr, secondaryAsyncResultChan, nil
 }
 
 func (b *InsertStmtMpx) LoadContext(ctx context.Context, primaryValue, secondaryValue interface{}) (AsyncCountChan, error) {

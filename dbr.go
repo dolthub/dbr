@@ -97,14 +97,20 @@ type SessionMpx struct {
 	SecondaryTimeout       time.Duration
 }
 
+// GetTimeout, ExecContext, and QueryContext are required
+// for reads, which are not multiplexed at this time.
+
+// GetTimeout returns the primary connection's timeout
 func (sessMpx *SessionMpx) GetTimeout() time.Duration {
 	return sessMpx.GetPrimaryTimeout()
 }
 
+// ExecContext calls ExecContext on the primary connection
 func (sessMpx *SessionMpx) ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
 	return sessMpx.PrimaryConn.ExecContext(ctx, query, args...)
 }
 
+// QueryContext calls QueryContext on the primary connection
 func (sessMpx *SessionMpx) QueryContext(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error) {
 	return sessMpx.PrimaryConn.QueryContext(ctx, query, args...)
 }
@@ -376,6 +382,8 @@ func execMpx(
 		serr := secondaryI.encodePlaceholder(builder, true)
 		secondaryQuery, secondaryValue := secondaryI.String(), secondaryI.Value()
 		if serr != nil {
+
+			secondaryAsyncResultChan <- &AsyncResult{ErrChan: secondaryErrChan}
 			return secondaryLog.EventErrKv("dbr.secondary.exec.interpolate", serr, kvs{
 				"sql":  secondaryQuery,
 				"args": fmt.Sprint(secondaryValue),
@@ -400,6 +408,8 @@ func execMpx(
 			if secondaryHasTracingImpl {
 				secondaryTraceImpl.SpanError(ctx, serr)
 			}
+
+			secondaryAsyncResultChan <- &AsyncResult{ErrChan: secondaryErrChan}
 			return secondaryLog.EventErrKv("dbr.secondary.exec.exec", serr, kvs{
 				"sql": secondaryQuery,
 			})
@@ -544,6 +554,8 @@ func queryRowsMpx(ctx context.Context, runnerMpx RunnerMpx, primaryLog, secondar
 		serr := secondaryI.encodePlaceholder(builder, true)
 		secondaryQuery, secondaryValue := secondaryI.String(), secondaryI.Value()
 		if serr != nil {
+
+			secondaryAsyncRowsChan <- &AsyncRows{ErrChan: secondaryErrChan}
 			return secondaryLog.EventErrKv("dbr.secondary.select.interpolate", serr, kvs{
 				"sql":  secondaryQuery,
 				"args": fmt.Sprint(secondaryValue),
@@ -568,6 +580,8 @@ func queryRowsMpx(ctx context.Context, runnerMpx RunnerMpx, primaryLog, secondar
 			if secondaryHasTracingImpl {
 				secondaryTraceImpl.SpanError(egCtx, serr)
 			}
+
+			secondaryAsyncRowsChan <- &AsyncRows{ErrChan: secondaryErrChan}
 			return secondaryLog.EventErrKv("dbr.secondary.select.load.query", serr, kvs{
 				"sql": secondaryQuery,
 			})

@@ -388,23 +388,66 @@ func TestPrimaryTimeoutMpx(t *testing.T) {
 		// tx op timeout
 		sessMpx.PrimaryTimeout = 0
 
-		txMpx, err := sessMpx.Begin()
+		primaryTx, secondaryAsyncTxChan, err := sessMpx.Begin()
 		require.NoError(t, err)
-		defer txMpx.RollbackUnlessCommitted()
+		defer primaryTx.RollbackUnlessCommitted()
 
-		txMpx.PrimaryTx.Timeout = time.Nanosecond
+		primaryTx.Timeout = time.Nanosecond
 
-		_, err = txMpx.Select("*").From("dbr_people").Load(&people)
+		_, err = primaryTx.Select("*").From("dbr_people").Load(&people)
 		require.Equal(t, context.DeadlineExceeded, err)
 
-		_, _, err = txMpx.InsertInto("dbr_people").Columns("name", "email").Values("test", "test@test.com").Exec()
+		_, err = primaryTx.InsertInto("dbr_people").Columns("name", "email").Values("test", "test@test.com").Exec()
 		require.Equal(t, context.DeadlineExceeded, err)
 
-		_, _, err = txMpx.Update("dbr_people").Set("name", "test1").Exec()
+		_, err = primaryTx.Update("dbr_people").Set("name", "test1").Exec()
 		require.Equal(t, context.DeadlineExceeded, err)
 
-		_, _, err = txMpx.DeleteFrom("dbr_people").Exec()
+		_, err = primaryTx.DeleteFrom("dbr_people").Exec()
 		require.Equal(t, context.DeadlineExceeded, err)
+
+		eg, egCtx := errgroup.WithContext(context.Background())
+		eg.Go(func() error {
+			for {
+				select {
+				case <-egCtx.Done():
+					return egCtx.Err()
+				case asyncTx, ok := <-secondaryAsyncTxChan:
+					require.True(t, ok)
+
+					for {
+						select {
+						case <-egCtx.Done():
+							return egCtx.Err()
+						case rerr, ok := <-asyncTx.ErrChan:
+							require.True(t, ok)
+							require.NoError(t, rerr)
+						default:
+							secondaryTx := asyncTx.Tx
+
+							defer secondaryTx.RollbackUnlessCommitted()
+
+							secondaryTx.Timeout = time.Nanosecond
+
+							_, err = secondaryTx.Select("*").From("dbr_people").Load(&people)
+							require.Equal(t, context.DeadlineExceeded, err)
+
+							_, err = secondaryTx.InsertInto("dbr_people").Columns("name", "email").Values("test", "test@test.com").Exec()
+							require.Equal(t, context.DeadlineExceeded, err)
+
+							_, err = secondaryTx.Update("dbr_people").Set("name", "test1").Exec()
+							require.Equal(t, context.DeadlineExceeded, err)
+
+							_, err = secondaryTx.DeleteFrom("dbr_people").Exec()
+							require.Equal(t, context.DeadlineExceeded, err)
+							return nil
+						}
+					}
+				}
+			}
+		})
+		err = eg.Wait()
+		require.NoError(t, err)
 	}
 }
 
@@ -415,39 +458,97 @@ func TestSecondaryTimeoutMpx(t *testing.T) {
 		// session op timeout
 		sessMpx.SecondaryTimeout = time.Nanosecond
 
-		_, _, err := sessMpx.InsertInto("dbr_people").Columns("name", "email").Values("test", "test@test.com").Exec()
-		require.Equal(t, context.DeadlineExceeded, err)
-		require.Equal(t, 0, sessMpx.PrimaryEventReceiver.(*testTraceReceiver).errored)
-		require.Equal(t, 1, sessMpx.SecondaryEventReceiver.(*testTraceReceiver).errored)
+		// check insert event
+		_, secondaryAsyncResultChan, err := sessMpx.InsertInto("dbr_people").Columns("name", "email").Values("test", "test@test.com").Exec()
+		require.NoError(t, err)
 
-		_, _, err = sessMpx.Update("dbr_people").Set("name", "test1").Exec()
-		require.Equal(t, context.DeadlineExceeded, err)
-		require.Equal(t, 0, sessMpx.PrimaryEventReceiver.(*testTraceReceiver).errored)
-		require.Equal(t, 2, sessMpx.SecondaryEventReceiver.(*testTraceReceiver).errored)
+		asyncRequireErrEvents(t, secondaryAsyncResultChan, sessMpx.PrimaryEventReceiver, sessMpx.SecondaryEventReceiver, 0, 1)
 
-		_, _, err = sessMpx.DeleteFrom("dbr_people").Exec()
-		require.Equal(t, context.DeadlineExceeded, err)
-		require.Equal(t, 0, sessMpx.PrimaryEventReceiver.(*testTraceReceiver).errored)
-		require.Equal(t, 3, sessMpx.SecondaryEventReceiver.(*testTraceReceiver).errored)
+		// check update event
+		_, secondaryAsyncResultChan, err = sessMpx.Update("dbr_people").Set("name", "test1").Exec()
+		require.NoError(t, err)
+
+		asyncRequireErrEvents(t, secondaryAsyncResultChan, sessMpx.PrimaryEventReceiver, sessMpx.SecondaryEventReceiver, 0, 2)
+
+		// check delete event
+		_, secondaryAsyncResultChan, err = sessMpx.DeleteFrom("dbr_people").Exec()
+		require.NoError(t, err)
+
+		asyncRequireErrEvents(t, secondaryAsyncResultChan, sessMpx.PrimaryEventReceiver, sessMpx.SecondaryEventReceiver, 0, 3)
 
 		// tx op timeout
 		sessMpx.SecondaryTimeout = 0
 
-		txMpx, err := sessMpx.Begin()
+		_, secondaryAsyncTxChan, err := sessMpx.Begin()
 		require.NoError(t, err)
-		defer txMpx.RollbackUnlessCommitted()
 
-		txMpx.SecondaryTx.Timeout = time.Nanosecond
+		eg, egCtx := errgroup.WithContext(context.Background())
+		eg.Go(func() error {
+			for {
+				select {
+				case <-egCtx.Done():
+					return egCtx.Err()
+				case asyncTx, ok := <-secondaryAsyncTxChan:
+					require.True(t, ok)
 
-		_, _, err = txMpx.InsertInto("dbr_people").Columns("name", "email").Values("test", "test@test.com").Exec()
-		require.Equal(t, context.DeadlineExceeded, err)
+					for {
+						select {
+						case <-egCtx.Done():
+							return egCtx.Err()
+						case rerr, ok := <-asyncTx.ErrChan:
+							require.True(t, ok)
+							require.NoError(t, rerr)
+						default:
+							secondaryTx := asyncTx.Tx
 
-		_, _, err = txMpx.Update("dbr_people").Set("name", "test1").Exec()
-		require.Equal(t, context.DeadlineExceeded, err)
+							defer secondaryTx.RollbackUnlessCommitted()
 
-		_, _, err = txMpx.DeleteFrom("dbr_people").Exec()
-		require.Equal(t, context.DeadlineExceeded, err)
+							secondaryTx.Timeout = time.Nanosecond
+
+							_, rerr := secondaryTx.InsertInto("dbr_people").Columns("name", "email").Values("test", "test@test.com").Exec()
+							require.Equal(t, context.DeadlineExceeded, rerr)
+
+							_, rerr = secondaryTx.Update("dbr_people").Set("name", "test1").Exec()
+							require.Equal(t, context.DeadlineExceeded, rerr)
+
+							_, rerr = secondaryTx.DeleteFrom("dbr_people").Exec()
+							require.Equal(t, context.DeadlineExceeded, rerr)
+							return nil
+						}
+					}
+				}
+			}
+		})
 	}
+}
+
+func asyncRequireErrEvents(t *testing.T, secondaryAsyncResultChan AsyncResultChan, primaryER, secondaryER EventReceiver, primaryErrCount, secondaryErrCount int) {
+	eg, egCtx := errgroup.WithContext(context.Background())
+	eg.Go(func() error {
+		for {
+			select {
+			case <-egCtx.Done():
+				return egCtx.Err()
+			case asyncResult, ok := <-secondaryAsyncResultChan:
+				require.True(t, ok)
+
+				for {
+					select {
+					case <-egCtx.Done():
+						return egCtx.Err()
+					case rerr, ok := <-asyncResult.ErrChan:
+						require.True(t, ok)
+						require.Error(t, context.DeadlineExceeded, rerr)
+					default:
+						require.Equal(t, primaryErrCount, primaryER.(*testTraceReceiver).errored)
+						require.Equal(t, secondaryErrCount, secondaryER.(*testTraceReceiver).errored)
+						return nil
+					}
+				}
+			}
+		}
+	})
+	require.NoError(t, eg.Wait())
 }
 
 func asyncRequireAffectedRows(t *testing.T, secondaryAsyncResultChan AsyncResultChan) {
