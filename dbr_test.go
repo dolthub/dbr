@@ -45,11 +45,11 @@ func createSessionMpx(primaryDriver, primaryDsn, secondaryDriver, secondaryDsn s
 
 var (
 	mysqlSession            = createSession("mysql", mysqlDSN)
-	postgresSession         = createSession("postgres", postgresDSN+"sslmode=disable") // TODO: remove sslmode before merge
+	postgresSession         = createSession("postgres", postgresDSN)
 	postgresBinarySession   = createSession("postgres", postgresDSN+"&binary_parameters=yes")
 	sqlite3Session          = createSession("sqlite3", sqlite3DSN)
 	mssqlSession            = createSession("mssql", mssqlDSN)
-	postgresMysqlSessionMpx = createSessionMpx("postgres", postgresDSN+"sslmode=disable", "mysql", mysqlDSN+"root@/dbr") // TODO: remove sslmode and root before merge
+	postgresMysqlSessionMpx = createSessionMpx("postgres", postgresDSN, "mysql", mysqlDSN)
 
 	// all test sessions should be here
 	testSession    = []*Session{mysqlSession, postgresSession, sqlite3Session, mssqlSession}
