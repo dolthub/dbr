@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"golang.org/x/sync/errgroup"
 	"time"
 
 	"github.com/gocraft/dbr/v2/dialect"
@@ -93,6 +94,8 @@ type SessionMpx struct {
 	SecondaryEventReceiver EventReceiver
 	PrimaryTimeout         time.Duration
 	SecondaryTimeout       time.Duration
+	secondaryQ             *Queue
+	qWorker                *Worker
 }
 
 func (sessMpx *SessionMpx) GetTimeout() time.Duration {
@@ -154,7 +157,58 @@ func (cmpx *ConnectionMpx) NewSessionMpx(primaryLog, secondaryLog EventReceiver)
 	if secondaryLog == nil {
 		secondaryLog = cmpx.SecondaryConn.EventReceiver
 	}
-	return &SessionMpx{ConnectionMpx: cmpx, PrimaryEventReceiver: primaryLog, SecondaryEventReceiver: secondaryLog}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	q := NewQueue()
+	w := NewWorker(q)
+
+	eg, egCtx := errgroup.WithContext(ctx)
+	go func() {
+		defer cancel()
+
+		err := eg.Wait()
+		if err != nil {
+			if secondaryLog != nil {
+				secondaryLog.EventErr("dbr.secondary.queue.error", err)
+			}
+		}
+	}()
+
+	eg.Go(func() error {
+		for {
+			select {
+			case <-egCtx.Done():
+				return egCtx.Err()
+			case rerr, ok := <-q.errs:
+				if ok {
+					secondaryLog.EventErr("dbr.secondary.work.error", rerr)
+				}
+			}
+		}
+	})
+
+	eg.Go(func() error {
+		for {
+			select {
+			case <-egCtx.Done():
+				return egCtx.Err()
+			default:
+				err := w.DoWork()
+				if err != nil {
+					return err
+				}
+			}
+		}
+	})
+	
+	return &SessionMpx{
+		ConnectionMpx:          cmpx,
+		PrimaryEventReceiver:   primaryLog,
+		SecondaryEventReceiver: secondaryLog,
+		secondaryQ:             q,
+		qWorker:                w,
+	}
 }
 
 // Ensure that tx and session are session runner
