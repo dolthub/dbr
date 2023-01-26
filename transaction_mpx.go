@@ -75,6 +75,10 @@ func (txMpx *TxMpx) GetTimeout() time.Duration {
 	return txMpx.PrimaryTx.GetTimeout()
 }
 
+func (txMpx *TxMpx) Exec(query string, args ...interface{}) (sql.Result, error) {
+	return txMpx.ExecContext(context.Background(), query, args...)
+}
+
 func (txMpx *TxMpx) ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
 	j := &Job{Exec: func() error {
 		_, err := txMpx.SecondaryTx.ExecContext(ctx, query, args...)

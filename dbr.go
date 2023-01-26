@@ -54,6 +54,11 @@ type ConnectionMpx struct {
 	SecondaryConn *Connection
 }
 
+func (connMpx *ConnectionMpx) Exec(query string, args ...interface{}) (sql.Result, error) {
+	sessMpx := connMpx.NewSessionMpx(context.Background(), connMpx.PrimaryConn.EventReceiver, connMpx.SecondaryConn.EventReceiver)
+	return sessMpx.Exec(query, args...)
+}
+
 // Session represents a business unit of execution.
 //
 // All queries in gocraft/dbr are made in the context of a session.
@@ -100,6 +105,10 @@ func (sessMpx *SessionMpx) AddJob(job *Job) {
 
 func (sessMpx *SessionMpx) GetTimeout() time.Duration {
 	return sessMpx.Timeout
+}
+
+func (sessMpx *SessionMpx) Exec(query string, args ...interface{}) (sql.Result, error) {
+	return sessMpx.ExecContext(context.Background(), query, args...)
 }
 
 func (sessMpx *SessionMpx) ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
