@@ -10,26 +10,11 @@ import (
 type TxMpx struct {
 	PrimaryTx   *Tx
 	SecondaryTx *Tx
+	SecondaryQ  *Queue
 }
 
-func (txMpx *TxMpx) GetTimeout() time.Duration {
-	return txMpx.PrimaryTx.GetTimeout()
-}
-
-func (txMpx *TxMpx) ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
-	return txMpx.PrimaryTx.ExecContext(ctx, query, args...)
-}
-
-func (txMpx *TxMpx) QueryContext(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error) {
-	return txMpx.PrimaryTx.QueryContext(ctx, query, args...)
-}
-
-func (txMpx *TxMpx) GetPrimaryTimeout() time.Duration {
-	return txMpx.PrimaryTx.Timeout
-}
-
-func (txMpx *TxMpx) GetSecondaryTimeout() time.Duration {
-	return txMpx.SecondaryTx.Timeout
+func (txMpx *TxMpx) AddJob(job *Job) {
+	txMpx.SecondaryQ.AddJob(job)
 }
 
 func (txMpx *TxMpx) PrimaryExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
@@ -56,28 +41,28 @@ func (smpx *SessionMpx) BeginTxs(ctx context.Context, opts *sql.TxOptions) (*TxM
 	}
 	smpx.PrimaryConn.Event("dbr.primary.begin")
 
+	// TODO: not sure how to make this nonblocking for primary txs
 	secondaryTx, err := smpx.SecondaryConn.BeginTx(ctx, opts)
 	if err != nil {
 		return nil, smpx.SecondaryConn.EventErr("dbr.secondary.begin.error", err)
 	}
 	smpx.SecondaryConn.Event("dbr.secondary.begin")
 
-	pto := smpx.GetPrimaryTimeout()
-	sto := smpx.GetSecondaryTimeout()
-
+	to := smpx.GetTimeout()
 	return &TxMpx{
 		PrimaryTx: &Tx{
 			EventReceiver: smpx.PrimaryEventReceiver,
 			Dialect:       smpx.PrimaryConn.Dialect,
 			Tx:            primaryTx,
-			Timeout:       pto,
+			Timeout:       to,
 		},
 		SecondaryTx: &Tx{
 			EventReceiver: smpx.SecondaryEventReceiver,
 			Dialect:       smpx.SecondaryConn.Dialect,
 			Tx:            secondaryTx,
-			Timeout:       sto,
+			Timeout:       to,
 		},
+		SecondaryQ: smpx.secondaryQ,
 	}, nil
 }
 
@@ -86,45 +71,65 @@ func (smpx *SessionMpx) Begin() (*TxMpx, error) {
 	return smpx.BeginTxs(context.Background(), nil)
 }
 
-// ExecContextMpx executes queries against the multiplexed transaction
-func (txMpx *TxMpx) ExecContextMpx(ctx context.Context, query string, args ...interface{}) (sql.Result, sql.Result, error) {
-	primaryResults, err := txMpx.PrimaryTx.ExecContext(ctx, query, args...)
-	if err != nil {
-		return nil, nil, err
-	}
-	secondaryResults, err := txMpx.SecondaryTx.ExecContext(ctx, query, args...)
-	return primaryResults, secondaryResults, err
+func (txMpx *TxMpx) GetTimeout() time.Duration {
+	return txMpx.PrimaryTx.GetTimeout()
+}
+
+func (txMpx *TxMpx) ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
+	j := &Job{Exec: func() error {
+		_, err := txMpx.SecondaryTx.ExecContext(ctx, query, args...)
+		return err
+	}}
+	txMpx.SecondaryQ.AddJob(j)
+	return txMpx.PrimaryTx.ExecContext(ctx, query, args...)
+}
+
+func (txMpx *TxMpx) QueryContext(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error) {
+	j := &Job{Exec: func() error {
+		_, err := txMpx.SecondaryTx.QueryContext(ctx, query, args...)
+		return err
+	}}
+	txMpx.SecondaryQ.AddJob(j)
+	return txMpx.PrimaryTx.QueryContext(ctx, query, args...)
 }
 
 // Commit finishes the transaction.
 func (txMpx *TxMpx) Commit() error {
+	j := &Job{Exec: func() error {
+		err := txMpx.SecondaryTx.Commit()
+		if err != nil {
+			return txMpx.SecondaryTx.EventErr("dbr.secondary.commit.error", err)
+		}
+		txMpx.SecondaryTx.Event("dbr.secondary.commit")
+		return nil
+	}}
+	txMpx.SecondaryQ.AddJob(j)
+
 	err := txMpx.PrimaryTx.Commit()
 	if err != nil {
 		return txMpx.PrimaryTx.EventErr("dbr.primary.commit.error", err)
 	}
 	txMpx.PrimaryTx.Event("dbr.primary.commit")
-
-	err = txMpx.SecondaryTx.Commit()
-	if err != nil {
-		return txMpx.SecondaryTx.EventErr("dbr.secondary.commit.error", err)
-	}
-	txMpx.SecondaryTx.Event("dbr.secondary.commit")
 	return nil
 }
 
 // Rollback cancels the transaction.
 func (txMpx *TxMpx) Rollback() error {
+	j := &Job{Exec: func() error {
+		err := txMpx.SecondaryTx.Rollback()
+		if err != nil {
+			return txMpx.SecondaryTx.EventErr("dbr.secondary.rollback", err)
+		}
+		txMpx.SecondaryTx.Event("dbr.secondary.rollback")
+		return nil
+	}}
+	txMpx.SecondaryQ.AddJob(j)
+
 	err := txMpx.PrimaryTx.Rollback()
 	if err != nil {
 		return txMpx.PrimaryTx.EventErr("dbr.primary.rollback", err)
 	}
 	txMpx.PrimaryTx.Event("dbr.primary.rollback")
-
-	err = txMpx.SecondaryTx.Rollback()
-	if err != nil {
-		return txMpx.SecondaryTx.EventErr("dbr.secondary.rollback", err)
-	}
-	txMpx.SecondaryTx.Event("dbr.secondary.rollback")
 	return nil
 }
 
@@ -136,6 +141,19 @@ func (txMpx *TxMpx) Rollback() error {
 // Keep in mind the only way to detect an error on the rollback
 // is via the event log.
 func (txMpx *TxMpx) RollbackUnlessCommitted() {
+	j := &Job{Exec: func() error {
+		err := txMpx.SecondaryTx.Rollback()
+		if err == sql.ErrTxDone {
+			// ok
+		} else if err != nil {
+			txMpx.SecondaryTx.EventErr("dbr.secondary.rollback_unless_committed", err)
+		} else {
+			txMpx.SecondaryTx.Event("dbr.secondary.rollback")
+		}
+		return nil
+	}}
+	txMpx.SecondaryQ.AddJob(j)
+
 	err := txMpx.PrimaryTx.Rollback()
 	if err == sql.ErrTxDone {
 		// ok
@@ -143,14 +161,5 @@ func (txMpx *TxMpx) RollbackUnlessCommitted() {
 		txMpx.PrimaryTx.EventErr("dbr.primary.rollback_unless_committed", err)
 	} else {
 		txMpx.PrimaryTx.Event("dbr.primary.rollback")
-	}
-
-	err = txMpx.SecondaryTx.Rollback()
-	if err == sql.ErrTxDone {
-		// ok
-	} else if err != nil {
-		txMpx.SecondaryTx.EventErr("dbr.secondary.rollback_unless_committed", err)
-	} else {
-		txMpx.SecondaryTx.Event("dbr.secondary.rollback")
 	}
 }

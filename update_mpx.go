@@ -9,6 +9,7 @@ import (
 // UpdateStmtMpx builds `UPDATE ...`.
 type UpdateStmtMpx struct {
 	RunnerMpx
+
 	PrimaryEventReceiver   EventReceiver
 	SecondaryEventReceiver EventReceiver
 	PrimaryDialect         Dialect
@@ -222,31 +223,31 @@ func (b *UpdateStmtMpx) Comment(comment string) *UpdateStmtMpx {
 	return b
 }
 
-func (b *UpdateStmtMpx) Exec() (sql.Result, sql.Result, error) {
+func (b *UpdateStmtMpx) Exec() (sql.Result, error) {
 	return b.ExecContext(context.Background())
 }
 
-func (b *UpdateStmtMpx) ExecContext(ctx context.Context) (sql.Result, sql.Result, error) {
-	primaryRes, _, secondaryRes, _, err := execMpx(ctx, b.RunnerMpx, b.PrimaryEventReceiver, b.SecondaryEventReceiver, b, b.PrimaryDialect, b.SecondaryDialect)
-	return primaryRes, secondaryRes, err
+func (b *UpdateStmtMpx) ExecContext(ctx context.Context) (sql.Result, error) {
+	primaryRes, _, err := execMpx(ctx, b.RunnerMpx, b.PrimaryEventReceiver, b.SecondaryEventReceiver, b, b.PrimaryDialect, b.SecondaryDialect)
+	return primaryRes, err
 }
 
-func (b *UpdateStmtMpx) ExecContextDebug(ctx context.Context) (sql.Result, string, sql.Result, string, error) {
+func (b *UpdateStmtMpx) ExecContextDebug(ctx context.Context) (sql.Result, string, error) {
 	return execMpx(ctx, b.RunnerMpx, b.PrimaryEventReceiver, b.SecondaryEventReceiver, b, b.PrimaryDialect, b.SecondaryDialect)
 }
 
-func (b *UpdateStmtMpx) LoadContext(ctx context.Context, primaryValue, secondaryValue interface{}) error {
-	_, _, _, _, err := queryMpx(ctx, b.RunnerMpx, b.PrimaryEventReceiver, b.SecondaryEventReceiver, b, b.PrimaryDialect, b.SecondaryDialect, primaryValue, secondaryValue)
+func (b *UpdateStmtMpx) LoadContext(ctx context.Context, primaryValue interface{}) error {
+	_, _, err := queryMpx(ctx, b.RunnerMpx, b.PrimaryEventReceiver, b.SecondaryEventReceiver, b, b.PrimaryDialect, b.SecondaryDialect, primaryValue)
 	return err
 }
 
-func (b *UpdateStmtMpx) LoadContextDebug(ctx context.Context, primaryValue, secondaryValue interface{}) (string, string, error) {
-	_, primaryQueryStr, _, secondaryQueryStr, err := queryMpx(ctx, b.RunnerMpx, b.PrimaryEventReceiver, b.SecondaryEventReceiver, b, b.PrimaryDialect, b.SecondaryDialect, primaryValue, secondaryValue)
-	return primaryQueryStr, secondaryQueryStr, err
+func (b *UpdateStmtMpx) LoadContextDebug(ctx context.Context, primaryValue interface{}) (string, error) {
+	_, primaryQueryStr, err := queryMpx(ctx, b.RunnerMpx, b.PrimaryEventReceiver, b.SecondaryEventReceiver, b, b.PrimaryDialect, b.SecondaryDialect, primaryValue)
+	return primaryQueryStr, err
 }
 
-func (b *UpdateStmtMpx) Load(primaryValue, secondaryValue interface{}) error {
-	return b.LoadContext(context.Background(), primaryValue, secondaryValue)
+func (b *UpdateStmtMpx) Load(primaryValue interface{}) error {
+	return b.LoadContext(context.Background(), primaryValue)
 }
 
 // IndexHint adds a index hint.

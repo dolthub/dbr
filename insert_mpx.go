@@ -21,14 +21,13 @@ type InsertStmtMpx struct {
 
 	raw
 
-	Table             string
-	Column            []string
-	Value             [][]interface{}
-	Ignored           bool
-	ReturnColumn      []string
-	PrimaryRecordID   *int64
-	SecondaryRecordID *int64
-	comments          Comments
+	Table        string
+	Column       []string
+	Value        [][]interface{}
+	Ignored      bool
+	ReturnColumn []string
+	RecordID     *int64
+	comments     Comments
 }
 
 type InsertBuilderMpx = InsertStmtMpx
@@ -229,9 +228,7 @@ func (b *InsertStmtMpx) Record(structValue interface{}) *InsertStmtMpx {
 			switch idField := found[len(found)-1].(type) {
 			case reflect.Value:
 				if idField.Kind() == reflect.Int64 {
-					id := idField.Addr().Interface().(*int64)
-					b.PrimaryRecordID = id
-					b.SecondaryRecordID = id
+					b.RecordID = idField.Addr().Interface().(*int64)
 				}
 			}
 		}
@@ -261,47 +258,34 @@ func (b *InsertStmtMpx) Pair(column string, value interface{}) *InsertStmtMpx {
 	return b
 }
 
-func (b *InsertStmtMpx) Exec() (sql.Result, sql.Result, error) {
+func (b *InsertStmtMpx) Exec() (sql.Result, error) {
 	return b.ExecContext(context.Background())
 }
 
-func (b *InsertStmtMpx) ExecContext(ctx context.Context) (sql.Result, sql.Result, error) {
-	primaryRes, _, secondaryRes, _, err := b.ExecContextDebug(ctx)
-	return primaryRes, secondaryRes, err
+func (b *InsertStmtMpx) ExecContext(ctx context.Context) (sql.Result, error) {
+	primaryRes, _, err := b.ExecContextDebug(ctx)
+	return primaryRes, err
 }
 
-func (b *InsertStmtMpx) ExecContextDebug(ctx context.Context) (sql.Result, string, sql.Result, string, error) {
-	primaryResult, primaryQueryStr, secondaryResult, secondaryQueryStr, err := execMpx(ctx, b.RunnerMpx, b.PrimaryEventReceiver, b.SecondaryEventReceiver, b, b.PrimaryDialect, b.SecondaryDialect)
+func (b *InsertStmtMpx) ExecContextDebug(ctx context.Context) (sql.Result, string, error) {
+	primaryResult, primaryQueryStr, err := execMpx(ctx, b.RunnerMpx, b.PrimaryEventReceiver, b.SecondaryEventReceiver, b, b.PrimaryDialect, b.SecondaryDialect)
 	if err != nil {
-		return nil, primaryQueryStr, nil, secondaryQueryStr, err
+		return nil, primaryQueryStr, err
 	}
 
-	if b.PrimaryRecordID != nil {
-		if id, err := primaryResult.LastInsertId(); err == nil {
-			*b.PrimaryRecordID = id
-		}
-		b.PrimaryRecordID = nil
-	}
-	if b.SecondaryRecordID != nil {
-		if id, err := secondaryResult.LastInsertId(); err == nil {
-			*b.SecondaryRecordID = id
-		}
-		b.SecondaryRecordID = nil
-	}
-
-	return primaryResult, primaryQueryStr, secondaryResult, secondaryQueryStr, nil
+	return primaryResult, primaryQueryStr, nil
 }
 
-func (b *InsertStmtMpx) LoadContext(ctx context.Context, primaryValue, secondaryValue interface{}) error {
-	_, _, _, _, err := queryMpx(ctx, b.RunnerMpx, b.PrimaryEventReceiver, b.SecondaryEventReceiver, b, b.PrimaryDialect, b.SecondaryDialect, primaryValue, secondaryValue)
+func (b *InsertStmtMpx) LoadContext(ctx context.Context, primaryValue interface{}) error {
+	_, _, err := queryMpx(ctx, b.RunnerMpx, b.PrimaryEventReceiver, b.SecondaryEventReceiver, b, b.PrimaryDialect, b.SecondaryDialect, primaryValue)
 	return err
 }
 
-func (b *InsertStmtMpx) LoadContextDebug(ctx context.Context, primaryValue, secondaryValue interface{}) (string, string, error) {
-	_, primaryQueryStr, _, secondaryQueryStr, err := queryMpx(ctx, b.RunnerMpx, b.PrimaryEventReceiver, b.SecondaryEventReceiver, b, b.PrimaryDialect, b.SecondaryDialect, primaryValue, secondaryValue)
-	return primaryQueryStr, secondaryQueryStr, err
+func (b *InsertStmtMpx) LoadContextDebug(ctx context.Context, primaryValue interface{}) (string, error) {
+	_, primaryQueryStr, err := queryMpx(ctx, b.RunnerMpx, b.PrimaryEventReceiver, b.SecondaryEventReceiver, b, b.PrimaryDialect, b.SecondaryDialect, primaryValue)
+	return primaryQueryStr, err
 }
 
-func (b *InsertStmtMpx) Load(primaryValue, secondaryValue interface{}) error {
-	return b.LoadContext(context.Background(), primaryValue, secondaryValue)
+func (b *InsertStmtMpx) Load(primaryValue interface{}) error {
+	return b.LoadContext(context.Background(), primaryValue)
 }

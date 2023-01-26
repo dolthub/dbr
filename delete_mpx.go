@@ -158,15 +158,15 @@ func (b *DeleteStmtMpx) Comment(comment string) *DeleteStmtMpx {
 	return b
 }
 
-func (b *DeleteStmtMpx) Exec() (sql.Result, sql.Result, error) {
+func (b *DeleteStmtMpx) Exec() (sql.Result, error) {
 	return b.ExecContext(context.Background())
 }
 
-func (b *DeleteStmtMpx) ExecContext(ctx context.Context) (sql.Result, sql.Result, error) {
-	primaryRes, _, secondaryRes, _, err := execMpx(ctx, b.RunnerMpx, b.PrimaryEventReceiver, b.SecondaryEventReceiver, b, b.PrimaryDialect, b.SecondaryDialect)
-	return primaryRes, secondaryRes, err
+func (b *DeleteStmtMpx) ExecContext(ctx context.Context) (sql.Result, error) {
+	primaryRes, _, err := execMpx(ctx, b.RunnerMpx, b.PrimaryEventReceiver, b.SecondaryEventReceiver, b, b.PrimaryDialect, b.SecondaryDialect)
+	return primaryRes, err
 }
 
-func (b *DeleteStmtMpx) ExecContextDebug(ctx context.Context) (sql.Result, string, sql.Result, string, error) {
+func (b *DeleteStmtMpx) ExecContextDebug(ctx context.Context) (sql.Result, string, error) {
 	return execMpx(ctx, b.RunnerMpx, b.PrimaryEventReceiver, b.SecondaryEventReceiver, b, b.PrimaryDialect, b.SecondaryDialect)
 }

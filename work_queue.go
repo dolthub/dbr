@@ -3,7 +3,7 @@ package dbr
 import (
 	"context"
 	"errors"
-	"fmt"
+	"golang.org/x/sync/errgroup"
 )
 
 type Job struct {
@@ -13,56 +13,50 @@ type Job struct {
 type Queue struct {
 	ctx    context.Context
 	cancel context.CancelFunc
+	eg     *errgroup.Group
 	jobs   chan *Job
-	errs   chan error
+	log    EventReceiver
 }
 
 func (q *Queue) AddJob(job *Job) {
-	fmt.Println("new job added to queue")
 	q.jobs <- job
 }
 
-func (q *Queue) AddJobs(jobs []*Job) {
-	for _, j := range jobs {
-		q.AddJob(j)
-	}
-}
-
-func (q *Queue) Close() {
+func (q *Queue) Close() error {
 	close(q.jobs)
 	q.cancel()
+	return q.eg.Wait()
 }
 
-func NewQueue() *Queue {
-	ctx, cancel := context.WithCancel(context.Background())
-	return &Queue{
-		ctx:    ctx,
+func NewWorkingQueue(ctx context.Context, log EventReceiver) *Queue {
+	ctx, cancel := context.WithCancel(ctx)
+	eg, egCtx := errgroup.WithContext(ctx)
+	q := &Queue{
+		ctx:    egCtx,
 		cancel: cancel,
+		eg:     eg,
 		jobs:   make(chan *Job),
-		errs:   make(chan error),
+		log:    log,
 	}
+	q.DoWork()
+	return q
 }
 
-type Worker struct {
-	q *Queue
-}
-
-func NewWorker(q *Queue) *Worker {
-	return &Worker{q}
-}
-
-func (w *Worker) DoWork() error {
-	defer close(w.q.errs)
-
-	for {
-		select {
-		case <-w.q.ctx.Done():
-			return w.q.ctx.Err()
-		case j, ok := <-w.q.jobs:
-			if !ok {
-				return errors.New("failed to read job from queue")
+func (q *Queue) DoWork() {
+	q.eg.Go(func() error {
+		for {
+			select {
+			case <-q.ctx.Done():
+				return q.ctx.Err()
+			case j, ok := <-q.jobs:
+				if !ok {
+					return errors.New("failed to read job from queue")
+				}
+				err := j.Exec()
+				if err != nil {
+					q.log.EventErr("dbr.secondary.job.error", err)
+				}
 			}
-			w.q.errs <- j.Exec()
 		}
-	}
+	})
 }
