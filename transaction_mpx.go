@@ -13,8 +13,8 @@ type TxMpx struct {
 	SecondaryQ  *Queue
 }
 
-func (txMpx *TxMpx) AddJob(job *Job) {
-	txMpx.SecondaryQ.AddJob(job)
+func (txMpx *TxMpx) AddJob(job *Job) error {
+	return txMpx.SecondaryQ.AddJob(job)
 }
 
 func (txMpx *TxMpx) PrimaryExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
@@ -154,7 +154,7 @@ func (txMpx *TxMpx) Rollback() error {
 // Keep in mind the only way to detect an error on the rollback
 // is via the event log.
 func (txMpx *TxMpx) RollbackUnlessCommitted() {
-	j := &Job{Exec: func() error {
+	j := &Job{exec: func() error {
 		if txMpx.SecondaryTx.Tx == nil {
 			panic("secondary tx not found, queue out of order")
 		}

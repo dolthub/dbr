@@ -65,8 +65,8 @@ func NewConnectionMpxFromConnections(primaryConn *Connection, secondaryConn *Con
 	}
 }
 
-func (connMpx *ConnectionMpx) AddJob(job *Job) {
-	connMpx.secondaryQ.AddJob(job)
+func (connMpx *ConnectionMpx) AddJob(job *Job) error {
+	return connMpx.secondaryQ.AddJob(job)
 }
 
 func (connMpx *ConnectionMpx) Exec(query string, args ...interface{}) (sql.Result, error) {
@@ -74,7 +74,10 @@ func (connMpx *ConnectionMpx) Exec(query string, args ...interface{}) (sql.Resul
 		_, err := connMpx.SecondaryConn.Exec(query, args...)
 		return err
 	})
-	connMpx.AddJob(j)
+	err := connMpx.AddJob(j)
+	if err != nil {
+		return nil, err
+	}
 
 	return connMpx.PrimaryConn.Exec(query, args...)
 }
@@ -83,9 +86,12 @@ func (connMpx *ConnectionMpx) Close() error {
 	j := NewJob("dbr.secondary.close", nil, func() error {
 		return connMpx.SecondaryConn.Close()
 	})
-	connMpx.AddJob(j)
+	err := connMpx.AddJob(j)
+	if err != nil {
+		return err
+	}
 
-	err := connMpx.PrimaryConn.Close()
+	err = connMpx.PrimaryConn.Close()
 	if err != nil {
 		return err
 	}
@@ -132,12 +138,12 @@ func (sessMpx *SessionMpx) SecondaryQueryContext(ctx context.Context, query stri
 	return sessMpx.SecondaryConn.QueryContext(ctx, query, args...)
 }
 
-func (sessMpx *SessionMpx) AddJob(job *Job) {
-	sessMpx.secondaryQ.AddJob(job)
+func (sessMpx *SessionMpx) AddJob(job *Job) error {
+	return sessMpx.secondaryQ.AddJob(job)
 }
 
 func (sessMpx *SessionMpx) SetSecondaryEventReceiver(log EventReceiver) {
-	sessMpx.secondaryQ.SetEventReciever(log)
+	sessMpx.secondaryQ.SetEventReceiver(log)
 	sessMpx.SecondaryEventReceiver = log
 }
 
@@ -154,7 +160,10 @@ func (sessMpx *SessionMpx) ExecContext(ctx context.Context, query string, args .
 		_, err := sessMpx.SecondaryExecContext(ctx, query, args...)
 		return err
 	})
-	sessMpx.AddJob(j)
+	err := sessMpx.AddJob(j)
+	if err != nil {
+		return nil, err
+	}
 	return sessMpx.PrimaryExecContext(ctx, query, args...)
 }
 
@@ -163,7 +172,10 @@ func (sessMpx *SessionMpx) QueryContext(ctx context.Context, query string, args 
 		_, err := sessMpx.SecondaryQueryContext(ctx, query, args...)
 		return err
 	})
-	sessMpx.AddJob(j)
+	err := sessMpx.AddJob(j)
+	if err != nil {
+		return nil, err
+	}
 	return sessMpx.PrimaryQueryContext(ctx, query, args...)
 }
 
@@ -191,7 +203,7 @@ func (connMpx *ConnectionMpx) NewSessionMpx(ctx context.Context, primaryLog, sec
 		secondaryLog = connMpx.SecondaryConn.EventReceiver
 	}
 
-	connMpx.secondaryQ.SetEventReciever(secondaryLog)
+	connMpx.secondaryQ.SetEventReceiver(secondaryLog)
 
 	return &SessionMpx{
 		ConnectionMpx:          connMpx,
@@ -248,7 +260,7 @@ type runner interface {
 }
 
 type RunnerMpx interface {
-	AddJob(job *Job)
+	AddJob(job *Job) error
 	GetTimeout() time.Duration
 	PrimaryExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error)
 	SecondaryExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error)
@@ -364,7 +376,7 @@ func execMpx(
 	}
 
 	j := &Job{
-		Exec: func() error {
+		exec: func() error {
 			var secondaryCtx context.Context
 			if timeout > 0 {
 				var cancel func()
@@ -434,7 +446,10 @@ func execMpx(
 			return nil
 		},
 	}
-	runnerMpx.AddJob(j)
+	err = runnerMpx.AddJob(j)
+	if err != nil {
+		return nil, "", err
+	}
 
 	return primaryResults, primaryQuery, nil
 }
@@ -553,7 +568,7 @@ func queryRowsMpx(ctx context.Context, runnerMpx RunnerMpx, primaryLog, secondar
 	}
 
 	j := &Job{
-		Exec: func() error {
+		exec: func() error {
 			secondaryI := interpolator{
 				Buffer:       NewBuffer(),
 				Dialect:      secondaryD,
@@ -609,7 +624,10 @@ func queryRowsMpx(ctx context.Context, runnerMpx RunnerMpx, primaryLog, secondar
 			return nil
 		},
 	}
-	runnerMpx.AddJob(j)
+	err = runnerMpx.AddJob(j)
+	if err != nil {
+		return 0, "", err
+	}
 
 	return primaryCount, primaryQuery, nil
 }

@@ -12,6 +12,7 @@ var (
 	secondaryExecEvt   = evt{eventName: "dbr.secondary.exec"}
 	commitEvt          = evt{eventName: "dbr.commit"}
 	secondaryCommitEvt = evt{eventName: "dbr.secondary.commit"}
+	secondaryCloseEvt  = evt{eventName: "dbr.secondary.close"}
 )
 
 func TestTransactionCommitMpx(t *testing.T) {
@@ -26,6 +27,7 @@ func TestTransactionCommitMpx(t *testing.T) {
 		secondaryExecEvt,
 		commitEvt, // from Tx.Commit()
 		secondaryCommitEvt,
+		secondaryCloseEvt, // from sessMpx.Close()
 	}
 
 	secondaryLogTracer := newRequireTraceReceiver()
@@ -70,14 +72,15 @@ func TestTransactionCommitMpx(t *testing.T) {
 	err = txMpx.Commit()
 	require.NoError(t, err)
 
-	// Selects use only primary
+	// selects use only primary
 	var person dbrPerson
 	err = txMpx.Select("*").From("dbr_people").Where(Eq("id", id)).LoadOne(&person)
 	require.Error(t, err)
 	require.Equal(t, 1, sessMpx.PrimaryEventReceiver.(*testTraceReceiver).errored)
 
-	//require.NoError(t, sessMpx.Close())
-	//time.Sleep(time.Second * 5)
+	// close the queue so it finishes processing all work
+	require.NoError(t, sessMpx.Close())
+
 	secondaryLogTracer.RequireEqual(t)
 }
 
