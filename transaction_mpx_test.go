@@ -2,10 +2,16 @@ package dbr
 
 import (
 	"context"
-	"testing"
-
 	"github.com/gocraft/dbr/v2/dialect"
 	"github.com/stretchr/testify/require"
+	"testing"
+)
+
+var (
+	secondaryBeginEvt  = evt{eventName: "dbr.secondary.begin"}
+	secondaryExecEvt   = evt{eventName: "dbr.secondary.exec"}
+	commitEvt          = evt{eventName: "dbr.commit"}
+	secondaryCommitEvt = evt{eventName: "dbr.secondary.commit"}
 )
 
 func TestTransactionCommitMpx(t *testing.T) {
@@ -14,6 +20,19 @@ func TestTransactionCommitMpx(t *testing.T) {
 
 	sessMpx := createSessionMpx(ctx, "postgres", postgresDSN+"sslmode=disable", "mysql", mysqlDSN+"root@/dbr")
 	resetMpx(t, sessMpx)
+
+	expectedEvents := []evt{
+		secondaryBeginEvt,
+		secondaryExecEvt,
+		commitEvt, // from Tx.Commit()
+		secondaryCommitEvt,
+	}
+
+	secondaryLogTracer := newRequireTraceReceiver()
+
+	sessMpx.SetSecondaryEventReceiver(secondaryLogTracer)
+	secondaryLogTracer.SetExpected(expectedEvents)
+	secondaryLogTracer.SetExpectedErrs(1) // final Select fails after tx commit
 
 	txMpx, err := sessMpx.Begin()
 	require.NoError(t, err)
@@ -35,7 +54,6 @@ func TestTransactionCommitMpx(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Len(t, sessMpx.PrimaryEventReceiver.(*testTraceReceiver).started, elem_count)
-	//require.Len(t, sessMpx.SecondaryEventReceiver.(*testTraceReceiver).started, elem_count)
 
 	require.Contains(t, sessMpx.PrimaryEventReceiver.(*testTraceReceiver).started[elem_count-1].eventName, "dbr.primary.exec")
 	require.Contains(t, sessMpx.PrimaryEventReceiver.(*testTraceReceiver).started[elem_count-1].query, "/* INSERT TEST */\n")
@@ -45,23 +63,9 @@ func TestTransactionCommitMpx(t *testing.T) {
 	require.Equal(t, elem_count, sessMpx.PrimaryEventReceiver.(*testTraceReceiver).finished)
 	require.Equal(t, 0, sessMpx.PrimaryEventReceiver.(*testTraceReceiver).errored)
 
-	// todo: call close here
-	// this is async
-	//require.Contains(t, sessMpx.SecondaryEventReceiver.(*testTraceReceiver).started[elem_count-1].eventName, "dbr.secondary.exec")
-	//require.Contains(t, sessMpx.SecondaryEventReceiver.(*testTraceReceiver).started[elem_count-1].query, "/* INSERT TEST */\n")
-	//require.Contains(t, sessMpx.SecondaryEventReceiver.(*testTraceReceiver).started[elem_count-1].query, "INSERT")
-	//require.Contains(t, sessMpx.SecondaryEventReceiver.(*testTraceReceiver).started[elem_count-1].query, "dbr_people")
-	//require.Contains(t, sessMpx.SecondaryEventReceiver.(*testTraceReceiver).started[elem_count-1].query, "name")
-	//require.Equal(t, elem_count, sessMpx.SecondaryEventReceiver.(*testTraceReceiver).finished)
-	//require.Equal(t, 0, sessMpx.SecondaryEventReceiver.(*testTraceReceiver).errored)
-
 	primaryRowsAffected, err := result.RowsAffected()
 	require.NoError(t, err)
 	require.Equal(t, int64(1), primaryRowsAffected)
-
-	//secondaryRowsAffected, err := secondaryResult.RowsAffected()
-	//require.NoError(t, err)
-	//require.Equal(t, int64(1), secondaryRowsAffected)
 
 	err = txMpx.Commit()
 	require.NoError(t, err)
@@ -71,6 +75,10 @@ func TestTransactionCommitMpx(t *testing.T) {
 	err = txMpx.Select("*").From("dbr_people").Where(Eq("id", id)).LoadOne(&person)
 	require.Error(t, err)
 	require.Equal(t, 1, sessMpx.PrimaryEventReceiver.(*testTraceReceiver).errored)
+
+	//require.NoError(t, sessMpx.Close())
+	//time.Sleep(time.Second * 5)
+	secondaryLogTracer.RequireEqual(t)
 }
 
 func TestTransactionMpxRollback(t *testing.T) {

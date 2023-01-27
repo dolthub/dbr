@@ -57,7 +57,7 @@ type ConnectionMpx struct {
 }
 
 func NewConnectionMpxFromConnections(primaryConn *Connection, secondaryConn *Connection) *ConnectionMpx {
-	q := NewWorkingQueue(context.Background(), secondaryConn.EventReceiver)
+	q := NewWorkingQueue(context.Background(), 500, secondaryConn.EventReceiver)
 	return &ConnectionMpx{
 		PrimaryConn:   primaryConn,
 		SecondaryConn: secondaryConn,
@@ -85,7 +85,12 @@ func (connMpx *ConnectionMpx) Close() error {
 	})
 	connMpx.AddJob(j)
 
-	return connMpx.PrimaryConn.Close()
+	err := connMpx.PrimaryConn.Close()
+	if err != nil {
+		return err
+	}
+
+	return connMpx.secondaryQ.Close()
 }
 
 // Session represents a business unit of execution.
@@ -129,6 +134,11 @@ func (sessMpx *SessionMpx) SecondaryQueryContext(ctx context.Context, query stri
 
 func (sessMpx *SessionMpx) AddJob(job *Job) {
 	sessMpx.secondaryQ.AddJob(job)
+}
+
+func (sessMpx *SessionMpx) SetSecondaryEventReceiver(log EventReceiver) {
+	sessMpx.secondaryQ.SetEventReciever(log)
+	sessMpx.SecondaryEventReceiver = log
 }
 
 func (sessMpx *SessionMpx) GetTimeout() time.Duration {
@@ -414,25 +424,6 @@ func execMpx(
 
 			if secondaryRowsAffected != primaryRowsAffected {
 				return secondaryLog.EventErrKv("dbr.secondary.primary.assertion.error", errors.New("rows affected not equal"), kvs{
-					"primarySql":    primaryQuery,
-					"primaryArgs":   fmt.Sprint(primaryValue),
-					"secondarySql":  secondaryQuery,
-					"secondaryArgs": fmt.Sprint(secondaryValue),
-				})
-			}
-
-			primaryLastInsertId, rerr := primaryResults.LastInsertId()
-			if rerr != nil {
-				return secondaryLog.EventErr("dbr.secondary.primary.exec.assertion.error", rerr)
-			}
-
-			secondaryLastInsertId, rerr := secondaryResults.LastInsertId()
-			if rerr != nil {
-				return secondaryLog.EventErr("dbr.secondary.primary.exec.assertion.error", rerr)
-			}
-
-			if secondaryLastInsertId != primaryLastInsertId {
-				return secondaryLog.EventErrKv("dbr.secondary.primary.exec.assertion.error", errors.New("last insert id not equal"), kvs{
 					"primarySql":    primaryQuery,
 					"primaryArgs":   fmt.Sprint(primaryValue),
 					"secondarySql":  secondaryQuery,

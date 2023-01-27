@@ -25,6 +25,7 @@ type Queue struct {
 	cancel context.CancelFunc
 	eg     *errgroup.Group
 	jobs   chan *Job
+	stop   chan struct{}
 	log    EventReceiver
 }
 
@@ -37,19 +38,18 @@ func (q *Queue) SetEventReciever(log EventReceiver) {
 }
 
 func (q *Queue) Close() error {
-	close(q.jobs)
 	q.cancel()
 	return q.eg.Wait()
 }
 
-func NewWorkingQueue(ctx context.Context, log EventReceiver) *Queue {
+func NewWorkingQueue(ctx context.Context, buffer int, log EventReceiver) *Queue {
 	ctx, cancel := context.WithCancel(ctx)
 	eg, egCtx := errgroup.WithContext(ctx)
 	q := &Queue{
 		ctx:    egCtx,
 		cancel: cancel,
 		eg:     eg,
-		jobs:   make(chan *Job),
+		jobs:   make(chan *Job, buffer),
 		log:    log,
 	}
 	q.DoWork()
@@ -87,7 +87,6 @@ func (q *Queue) DoWork() {
 						}
 					}
 				}
-
 			}
 		}
 	})

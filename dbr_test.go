@@ -146,7 +146,6 @@ func resetConn(t *testing.T, conn *Connection) EventReceiver {
 		_, err := conn.Exec(v)
 		require.NoError(t, err)
 	}
-
 	return &testTraceReceiver{}
 }
 
