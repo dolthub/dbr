@@ -52,11 +52,41 @@ type Connection struct {
 type ConnectionMpx struct {
 	PrimaryConn   *Connection
 	SecondaryConn *Connection
+	secondaryQ    *Queue
+}
+
+func NewConnectionMpxFromConnections(primaryConn *Connection, secondaryConn *Connection) *ConnectionMpx {
+	q := NewWorkingQueue(context.Background(), secondaryConn.EventReceiver)
+	return &ConnectionMpx{
+		PrimaryConn:   primaryConn,
+		SecondaryConn: secondaryConn,
+		secondaryQ:    q,
+	}
+}
+
+func (connMpx *ConnectionMpx) AddJob(job *Job) {
+	connMpx.secondaryQ.AddJob(job)
 }
 
 func (connMpx *ConnectionMpx) Exec(query string, args ...interface{}) (sql.Result, error) {
-	sessMpx := connMpx.NewSessionMpx(context.Background(), connMpx.PrimaryConn.EventReceiver, connMpx.SecondaryConn.EventReceiver)
-	return sessMpx.Exec(query, args...)
+	j := &Job{Exec: func() error {
+		_, err := connMpx.SecondaryConn.Exec(query, args...)
+		return err
+	}}
+	connMpx.AddJob(j)
+
+	return connMpx.PrimaryConn.Exec(query, args...)
+}
+
+func (connMpx *ConnectionMpx) Close() error {
+	j := &Job{
+		Exec: func() error {
+			return connMpx.SecondaryConn.Close()
+		},
+	}
+	connMpx.AddJob(j)
+
+	return connMpx.PrimaryConn.Close()
 }
 
 // Session represents a business unit of execution.
@@ -80,7 +110,6 @@ type SessionMpx struct {
 	PrimaryEventReceiver   EventReceiver
 	SecondaryEventReceiver EventReceiver
 	Timeout                time.Duration
-	secondaryQ             *Queue
 }
 
 func (sessMpx *SessionMpx) PrimaryExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
@@ -118,7 +147,7 @@ func (sessMpx *SessionMpx) ExecContext(ctx context.Context, query string, args .
 			return err
 		},
 	}
-	sessMpx.secondaryQ.AddJob(j)
+	sessMpx.AddJob(j)
 	return sessMpx.PrimaryExecContext(ctx, query, args...)
 }
 
@@ -129,7 +158,7 @@ func (sessMpx *SessionMpx) QueryContext(ctx context.Context, query string, args 
 			return err
 		},
 	}
-	sessMpx.secondaryQ.AddJob(j)
+	sessMpx.AddJob(j)
 	return sessMpx.PrimaryQueryContext(ctx, query, args...)
 }
 
@@ -149,21 +178,20 @@ func (conn *Connection) NewSession(log EventReceiver) *Session {
 
 // NewSessionMpx instantiates a SessionMpx from ConnectionMpx.
 // If log is nil, ConnectionMpx's EventReceivers are used.
-func (cmpx *ConnectionMpx) NewSessionMpx(ctx context.Context, primaryLog, secondaryLog EventReceiver) *SessionMpx {
+func (connMpx *ConnectionMpx) NewSessionMpx(ctx context.Context, primaryLog, secondaryLog EventReceiver) *SessionMpx {
 	if primaryLog == nil {
-		primaryLog = cmpx.PrimaryConn.EventReceiver // Use parent instrumentation
+		primaryLog = connMpx.PrimaryConn.EventReceiver // Use parent instrumentation
 	}
 	if secondaryLog == nil {
-		secondaryLog = cmpx.SecondaryConn.EventReceiver
+		secondaryLog = connMpx.SecondaryConn.EventReceiver
 	}
 
-	q := NewWorkingQueue(ctx, secondaryLog)
+	connMpx.secondaryQ.SetEventReciever(secondaryLog)
 
 	return &SessionMpx{
-		ConnectionMpx:          cmpx,
+		ConnectionMpx:          connMpx,
 		PrimaryEventReceiver:   primaryLog,
 		SecondaryEventReceiver: secondaryLog,
-		secondaryQ:             q,
 	}
 }
 

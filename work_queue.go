@@ -22,6 +22,10 @@ func (q *Queue) AddJob(job *Job) {
 	q.jobs <- job
 }
 
+func (q *Queue) SetEventReciever(log EventReceiver) {
+	q.log = log
+}
+
 func (q *Queue) Close() error {
 	close(q.jobs)
 	q.cancel()
