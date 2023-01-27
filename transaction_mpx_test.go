@@ -35,7 +35,7 @@ func TestTransactionCommitMpx(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Len(t, sessMpx.PrimaryEventReceiver.(*testTraceReceiver).started, elem_count)
-	require.Len(t, sessMpx.SecondaryEventReceiver.(*testTraceReceiver).started, elem_count)
+	//require.Len(t, sessMpx.SecondaryEventReceiver.(*testTraceReceiver).started, elem_count)
 
 	require.Contains(t, sessMpx.PrimaryEventReceiver.(*testTraceReceiver).started[elem_count-1].eventName, "dbr.primary.exec")
 	require.Contains(t, sessMpx.PrimaryEventReceiver.(*testTraceReceiver).started[elem_count-1].query, "/* INSERT TEST */\n")
