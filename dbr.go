@@ -4,6 +4,7 @@ package dbr
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -69,21 +70,19 @@ func (connMpx *ConnectionMpx) AddJob(job *Job) {
 }
 
 func (connMpx *ConnectionMpx) Exec(query string, args ...interface{}) (sql.Result, error) {
-	j := &Job{Exec: func() error {
+	j := NewJob("dbr.secondary.exec", map[string]string{"sql": query}, func() error {
 		_, err := connMpx.SecondaryConn.Exec(query, args...)
 		return err
-	}}
+	})
 	connMpx.AddJob(j)
 
 	return connMpx.PrimaryConn.Exec(query, args...)
 }
 
 func (connMpx *ConnectionMpx) Close() error {
-	j := &Job{
-		Exec: func() error {
-			return connMpx.SecondaryConn.Close()
-		},
-	}
+	j := NewJob("dbr.secondary.close", nil, func() error {
+		return connMpx.SecondaryConn.Close()
+	})
 	connMpx.AddJob(j)
 
 	return connMpx.PrimaryConn.Close()
@@ -141,23 +140,19 @@ func (sessMpx *SessionMpx) Exec(query string, args ...interface{}) (sql.Result, 
 }
 
 func (sessMpx *SessionMpx) ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
-	j := &Job{
-		Exec: func() error {
-			_, err := sessMpx.SecondaryExecContext(ctx, query, args...)
-			return err
-		},
-	}
+	j := NewJob("dbr.secondary.exec_context", map[string]string{"sql": query}, func() error {
+		_, err := sessMpx.SecondaryExecContext(ctx, query, args...)
+		return err
+	})
 	sessMpx.AddJob(j)
 	return sessMpx.PrimaryExecContext(ctx, query, args...)
 }
 
 func (sessMpx *SessionMpx) QueryContext(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error) {
-	j := &Job{
-		Exec: func() error {
-			_, err := sessMpx.SecondaryQueryContext(ctx, query, args...)
-			return err
-		},
-	}
+	j := NewJob("dbr.secondary.query_context", map[string]string{"sql": query}, func() error {
+		_, err := sessMpx.SecondaryQueryContext(ctx, query, args...)
+		return err
+	})
 	sessMpx.AddJob(j)
 	return sessMpx.PrimaryQueryContext(ctx, query, args...)
 }
@@ -397,7 +392,7 @@ func execMpx(
 				defer secondaryTraceImpl.SpanFinish(secondaryCtx)
 			}
 
-			_, rerr = runnerMpx.SecondaryExecContext(secondaryCtx, secondaryQuery, secondaryValue...)
+			secondaryResults, rerr := runnerMpx.SecondaryExecContext(secondaryCtx, secondaryQuery, secondaryValue...)
 			if rerr != nil {
 				if secondaryHasTracingImpl {
 					secondaryTraceImpl.SpanError(ctx, rerr)
@@ -407,7 +402,44 @@ func execMpx(
 				})
 			}
 
-			// TODO: make assertions about primaryResult secondaryResult to make sure secondary matches
+			// assert primary and secondary are same
+			primaryRowsAffected, rerr := primaryResults.RowsAffected()
+			if rerr != nil {
+				return secondaryLog.EventErr("dbr.secondary.primary.assertion.error", rerr)
+			}
+			secondaryRowsAffected, rerr := secondaryResults.RowsAffected()
+			if rerr != nil {
+				return secondaryLog.EventErr("dbr.secondary.primary.assertion.error", rerr)
+			}
+
+			if secondaryRowsAffected != primaryRowsAffected {
+				return secondaryLog.EventErrKv("dbr.secondary.primary.assertion.error", errors.New("rows affected not equal"), kvs{
+					"primarySql":    primaryQuery,
+					"primaryArgs":   fmt.Sprint(primaryValue),
+					"secondarySql":  secondaryQuery,
+					"secondaryArgs": fmt.Sprint(secondaryValue),
+				})
+			}
+
+			primaryLastInsertId, rerr := primaryResults.LastInsertId()
+			if rerr != nil {
+				return secondaryLog.EventErr("dbr.secondary.primary.exec.assertion.error", rerr)
+			}
+
+			secondaryLastInsertId, rerr := secondaryResults.LastInsertId()
+			if rerr != nil {
+				return secondaryLog.EventErr("dbr.secondary.primary.exec.assertion.error", rerr)
+			}
+
+			if secondaryLastInsertId != primaryLastInsertId {
+				return secondaryLog.EventErrKv("dbr.secondary.primary.exec.assertion.error", errors.New("last insert id not equal"), kvs{
+					"primarySql":    primaryQuery,
+					"primaryArgs":   fmt.Sprint(primaryValue),
+					"secondarySql":  secondaryQuery,
+					"secondaryArgs": fmt.Sprint(secondaryValue),
+				})
+			}
+
 			return nil
 		},
 	}
@@ -481,7 +513,7 @@ func query(ctx context.Context, runner runner, log EventReceiver, builder Builde
 	return count, query, nil
 }
 
-func queryRowsMpx(ctx context.Context, runnerMpx RunnerMpx, primaryLog, secondaryLog EventReceiver, builder Builder, primaryD, secondaryD Dialect) (string, *sql.Rows, error) {
+func queryRowsMpx(ctx context.Context, runnerMpx RunnerMpx, primaryLog, secondaryLog EventReceiver, builder Builder, primaryD, secondaryD Dialect, primaryDest interface{}) (int, string, error) {
 	// discard the timeout set in the runner, the context should not be canceled
 	// implicitly here but explicitly by the caller since the returned *sql.Rows
 	// may still listening to the context
@@ -493,7 +525,7 @@ func queryRowsMpx(ctx context.Context, runnerMpx RunnerMpx, primaryLog, secondar
 	err := primaryI.encodePlaceholder(builder, true)
 	primaryQuery, primaryValue := primaryI.String(), primaryI.Value()
 	if err != nil {
-		return primaryQuery, nil, primaryLog.EventErrKv("dbr.primary.select.interpolate", err, kvs{
+		return 0, primaryQuery, primaryLog.EventErrKv("dbr.primary.select.interpolate", err, kvs{
 			"sql":  primaryQuery,
 			"args": fmt.Sprint(primaryValue),
 		})
@@ -517,7 +549,14 @@ func queryRowsMpx(ctx context.Context, runnerMpx RunnerMpx, primaryLog, secondar
 		if primaryHasTracingImpl {
 			primaryTraceImpl.SpanError(ctx, err)
 		}
-		return primaryQuery, nil, primaryLog.EventErrKv("dbr.primary.select.load.query", err, kvs{
+		return 0, primaryQuery, primaryLog.EventErrKv("dbr.primary.select.load.query", err, kvs{
+			"sql": primaryQuery,
+		})
+	}
+
+	primaryCount, err := Load(primaryRows, primaryDest)
+	if err != nil {
+		return 0, primaryQuery, primaryLog.EventErrKv("dbr.primary.select.load.scan", err, kvs{
 			"sql": primaryQuery,
 		})
 	}
@@ -551,7 +590,7 @@ func queryRowsMpx(ctx context.Context, runnerMpx RunnerMpx, primaryLog, secondar
 				defer secondaryTraceImpl.SpanFinish(ctx)
 			}
 
-			_, rerr = runnerMpx.SecondaryQueryContext(ctx, secondaryQuery, secondaryValue...)
+			secondaryRows, rerr := runnerMpx.SecondaryQueryContext(ctx, secondaryQuery, secondaryValue...)
 			if rerr != nil {
 				if secondaryHasTracingImpl {
 					secondaryTraceImpl.SpanError(ctx, rerr)
@@ -561,13 +600,27 @@ func queryRowsMpx(ctx context.Context, runnerMpx RunnerMpx, primaryLog, secondar
 				})
 			}
 
-			// TODO: make assertions about primaryRows secondaryRows to make sure secondary are match
+			// assert primary and secondary are same
+			secondaryCount := 0
+			for secondaryRows.Next() {
+				secondaryCount++
+			}
+
+			if secondaryCount != primaryCount {
+				return secondaryLog.EventErrKv("dbr.secondary.primary.query.assertion.error", errors.New("count not equal"), kvs{
+					"primarySql":    primaryQuery,
+					"primaryArgs":   fmt.Sprint(primaryValue),
+					"secondarySql":  secondaryQuery,
+					"secondaryArgs": fmt.Sprint(secondaryValue),
+				})
+			}
+
 			return nil
 		},
 	}
 	runnerMpx.AddJob(j)
 
-	return primaryQuery, primaryRows, nil
+	return primaryCount, primaryQuery, nil
 }
 
 func queryMpx(ctx context.Context, runnerMpx RunnerMpx, primaryLog, secondaryLog EventReceiver, builder Builder, primaryD, secondaryD Dialect, primaryDest interface{}) (int, string, error) {
@@ -578,17 +631,5 @@ func queryMpx(ctx context.Context, runnerMpx RunnerMpx, primaryLog, secondaryLog
 		defer cancel()
 	}
 
-	query, rows, err := queryRowsMpx(ctx, runnerMpx, primaryLog, secondaryLog, builder, primaryD, secondaryD)
-	if err != nil {
-		return 0, query, err
-	}
-
-	count, err := Load(rows, primaryDest)
-	if err != nil {
-		return 0, query, primaryLog.EventErrKv("dbr.primary.select.load.scan", err, kvs{
-			"sql": query,
-		})
-	}
-
-	return count, query, nil
+	return queryRowsMpx(ctx, runnerMpx, primaryLog, secondaryLog, builder, primaryD, secondaryD, primaryDest)
 }

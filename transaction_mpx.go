@@ -58,15 +58,14 @@ func (smpx *SessionMpx) BeginTxs(ctx context.Context, opts *sql.TxOptions) (*TxM
 		SecondaryQ: smpx.secondaryQ,
 	}
 
-	j := &Job{Exec: func() error {
+	j := NewJob("dbr.secondary.begin", nil, func() error {
 		secondaryTx, rerr := smpx.SecondaryConn.BeginTx(ctx, opts)
 		if rerr != nil {
-			return smpx.SecondaryConn.EventErr("dbr.secondary.begin.error", rerr)
+			return rerr
 		}
-		smpx.SecondaryConn.Event("dbr.secondary.begin")
 		txmPx.SecondaryTx.Tx = secondaryTx
 		return nil
-	}}
+	})
 	smpx.AddJob(j)
 
 	return txmPx, nil
@@ -86,46 +85,40 @@ func (txMpx *TxMpx) Exec(query string, args ...interface{}) (sql.Result, error) 
 }
 
 func (txMpx *TxMpx) ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
-	j := &Job{Exec: func() error {
+	j := NewJob("dbr.secondary.exec_context", map[string]string{"sql": query}, func() error {
 		if txMpx.SecondaryTx.Tx == nil {
 			panic("secondary tx not found, queue out of order")
 		}
 
 		_, err := txMpx.SecondaryTx.ExecContext(ctx, query, args...)
 		return err
-	}}
-	txMpx.SecondaryQ.AddJob(j)
+	})
+	txMpx.AddJob(j)
 	return txMpx.PrimaryTx.ExecContext(ctx, query, args...)
 }
 
 func (txMpx *TxMpx) QueryContext(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error) {
-	j := &Job{Exec: func() error {
+	j := NewJob("dbr.secondary.query_context", map[string]string{"sql": query}, func() error {
 		if txMpx.SecondaryTx.Tx == nil {
 			panic("secondary tx not found, queue out of order")
 		}
 
 		_, err := txMpx.SecondaryTx.QueryContext(ctx, query, args...)
 		return err
-	}}
-	txMpx.SecondaryQ.AddJob(j)
+	})
+	txMpx.AddJob(j)
 	return txMpx.PrimaryTx.QueryContext(ctx, query, args...)
 }
 
 // Commit finishes the transaction.
 func (txMpx *TxMpx) Commit() error {
-	j := &Job{Exec: func() error {
+	j := NewJob("dbr.secondary.commit", nil, func() error {
 		if txMpx.SecondaryTx.Tx == nil {
 			panic("secondary tx not found, queue out of order")
 		}
-
-		err := txMpx.SecondaryTx.Commit()
-		if err != nil {
-			return txMpx.SecondaryTx.EventErr("dbr.secondary.commit.error", err)
-		}
-		txMpx.SecondaryTx.Event("dbr.secondary.commit")
-		return nil
-	}}
-	txMpx.SecondaryQ.AddJob(j)
+		return txMpx.SecondaryTx.Commit()
+	})
+	txMpx.AddJob(j)
 
 	err := txMpx.PrimaryTx.Commit()
 	if err != nil {
@@ -137,19 +130,13 @@ func (txMpx *TxMpx) Commit() error {
 
 // Rollback cancels the transaction.
 func (txMpx *TxMpx) Rollback() error {
-	j := &Job{Exec: func() error {
+	j := NewJob("db.secondary.rollback", nil, func() error {
 		if txMpx.SecondaryTx.Tx == nil {
 			panic("secondary tx not found, queue out of order")
 		}
-
-		err := txMpx.SecondaryTx.Rollback()
-		if err != nil {
-			return txMpx.SecondaryTx.EventErr("dbr.secondary.rollback", err)
-		}
-		txMpx.SecondaryTx.Event("dbr.secondary.rollback")
-		return nil
-	}}
-	txMpx.SecondaryQ.AddJob(j)
+		return txMpx.SecondaryTx.Rollback()
+	})
+	txMpx.AddJob(j)
 
 	err := txMpx.PrimaryTx.Rollback()
 	if err != nil {
@@ -182,7 +169,7 @@ func (txMpx *TxMpx) RollbackUnlessCommitted() {
 		}
 		return nil
 	}}
-	txMpx.SecondaryQ.AddJob(j)
+	txMpx.AddJob(j)
 
 	err := txMpx.PrimaryTx.Rollback()
 	if err == sql.ErrTxDone {

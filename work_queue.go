@@ -7,7 +7,17 @@ import (
 )
 
 type Job struct {
+	event string
+	kvs
 	Exec func() error
+}
+
+func NewJob(event string, kvs kvs, exec func() error) *Job {
+	return &Job{
+		event: event,
+		kvs:   kvs,
+		Exec:  exec,
+	}
 }
 
 type Queue struct {
@@ -58,8 +68,26 @@ func (q *Queue) DoWork() {
 				}
 				err := j.Exec()
 				if err != nil {
-					q.log.EventErr("dbr.secondary.job.error", err)
+					// skip logging if theres no event name
+					// let the job handle the loggin on its own
+					if j.event != "" {
+						if len(j.kvs) > 0 {
+							q.log.EventErrKv(j.event, err, j.kvs)
+						} else {
+							q.log.EventErr(j.event, err)
+						}
+					}
+				} else {
+					// same here for success case
+					if j.event != "" {
+						if len(j.kvs) > 0 {
+							q.log.EventKv(j.event, j.kvs)
+						} else {
+							q.log.Event(j.event)
+						}
+					}
 				}
+
 			}
 		}
 	})
