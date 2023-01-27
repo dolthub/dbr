@@ -93,20 +93,27 @@ func (txMpx *TxMpx) ExecContext(ctx context.Context, query string, args ...inter
 		_, err := txMpx.SecondaryTx.ExecContext(ctx, query, args...)
 		return err
 	})
-	txMpx.AddJob(j)
+	err := txMpx.AddJob(j)
+	if err != nil {
+		return nil, err
+	}
 	return txMpx.PrimaryTx.ExecContext(ctx, query, args...)
 }
 
 func (txMpx *TxMpx) QueryContext(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error) {
-	j := NewJob("dbr.secondary.query_context", map[string]string{"sql": query}, func() error {
-		if txMpx.SecondaryTx.Tx == nil {
-			panic("secondary tx not found, queue out of order")
-		}
-
-		_, err := txMpx.SecondaryTx.QueryContext(ctx, query, args...)
-		return err
-	})
-	txMpx.AddJob(j)
+	// TODO: read from secondary db
+	//j := NewJob("dbr.secondary.query_context", map[string]string{"sql": query}, func() error {
+	//	if txMpx.SecondaryTx.Tx == nil {
+	//		panic("secondary tx not found, queue out of order")
+	//	}
+	//
+	//	_, err := txMpx.SecondaryTx.QueryContext(ctx, query, args...)
+	//	return err
+	//})
+	//err := txMpx.AddJob(j)
+	//if err != nil {
+	//	return nil, err
+	//}
 	return txMpx.PrimaryTx.QueryContext(ctx, query, args...)
 }
 
@@ -118,9 +125,12 @@ func (txMpx *TxMpx) Commit() error {
 		}
 		return txMpx.SecondaryTx.Commit()
 	})
-	txMpx.AddJob(j)
+	err := txMpx.AddJob(j)
+	if err != nil {
+		return err
+	}
 
-	err := txMpx.PrimaryTx.Commit()
+	err = txMpx.PrimaryTx.Commit()
 	if err != nil {
 		return txMpx.PrimaryTx.EventErr("dbr.primary.commit.error", err)
 	}
@@ -130,15 +140,18 @@ func (txMpx *TxMpx) Commit() error {
 
 // Rollback cancels the transaction.
 func (txMpx *TxMpx) Rollback() error {
-	j := NewJob("db.secondary.rollback", nil, func() error {
+	j := NewJob("dbr.secondary.rollback", nil, func() error {
 		if txMpx.SecondaryTx.Tx == nil {
 			panic("secondary tx not found, queue out of order")
 		}
 		return txMpx.SecondaryTx.Rollback()
 	})
-	txMpx.AddJob(j)
+	err := txMpx.AddJob(j)
+	if err != nil {
+		return err
+	}
 
-	err := txMpx.PrimaryTx.Rollback()
+	err = txMpx.PrimaryTx.Rollback()
 	if err != nil {
 		return txMpx.PrimaryTx.EventErr("dbr.primary.rollback", err)
 	}
@@ -169,9 +182,12 @@ func (txMpx *TxMpx) RollbackUnlessCommitted() {
 		}
 		return nil
 	}}
-	txMpx.AddJob(j)
+	err := txMpx.AddJob(j)
+	if err != nil {
+		txMpx.SecondaryTx.EventErr("dbr.secondary.rollback_unless_committed", err)
+	}
 
-	err := txMpx.PrimaryTx.Rollback()
+	err = txMpx.PrimaryTx.Rollback()
 	if err == sql.ErrTxDone {
 		// ok
 	} else if err != nil {

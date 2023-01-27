@@ -7,14 +7,6 @@ import (
 	"testing"
 )
 
-var (
-	secondaryBeginEvt  = evt{eventName: "dbr.secondary.begin"}
-	secondaryExecEvt   = evt{eventName: "dbr.secondary.exec"}
-	commitEvt          = evt{eventName: "dbr.commit"}
-	secondaryCommitEvt = evt{eventName: "dbr.secondary.commit"}
-	secondaryCloseEvt  = evt{eventName: "dbr.secondary.close"}
-)
-
 func TestTransactionCommitMpx(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -23,18 +15,17 @@ func TestTransactionCommitMpx(t *testing.T) {
 	resetMpx(t, sessMpx)
 
 	expectedEvents := []evt{
-		secondaryBeginEvt,
-		secondaryExecEvt,
-		commitEvt, // from Tx.Commit()
-		secondaryCommitEvt,
-		secondaryCloseEvt, // from sessMpx.Close()
+		secondaryBeginEvt,  // begin
+		secondaryExecEvt,   // insert
+		commitEvt,          // from Tx.Commit()
+		secondaryCommitEvt, // commit
+		secondaryCloseEvt,  // close
 	}
 
 	secondaryLogTracer := newRequireTraceReceiver()
 
 	sessMpx.SetSecondaryEventReceiver(secondaryLogTracer)
 	secondaryLogTracer.SetExpected(expectedEvents)
-	secondaryLogTracer.SetExpectedErrs(1) // final Select fails after tx commit
 
 	txMpx, err := sessMpx.Begin()
 	require.NoError(t, err)
@@ -91,6 +82,19 @@ func TestTransactionMpxRollback(t *testing.T) {
 	sessMpx := createSessionMpx(ctx, "postgres", postgresDSN+"sslmode=disable", "mysql", mysqlDSN+"root@/dbr")
 	resetMpx(t, sessMpx)
 
+	expectedEvents := []evt{
+		secondaryBeginEvt,    // begin
+		secondaryExecEvt,     // insert
+		rollbackEvt,          // from Tx.Rollback()
+		secondaryRollbackEvt, // rollback
+		secondaryCloseEvt,    // close
+	}
+
+	secondaryLogTracer := newRequireTraceReceiver()
+
+	sessMpx.SetSecondaryEventReceiver(secondaryLogTracer)
+	secondaryLogTracer.SetExpected(expectedEvents)
+
 	txMpx, err := sessMpx.Begin()
 	require.NoError(t, err)
 	defer txMpx.RollbackUnlessCommitted()
@@ -111,10 +115,6 @@ func TestTransactionMpxRollback(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, int64(1), primaryRowsAffected)
 
-	//secondaryRowsAffected, err := secondaryResult.RowsAffected()
-	//require.NoError(t, err)
-	//require.Equal(t, int64(1), secondaryRowsAffected)
-
 	err = txMpx.Rollback()
 	require.NoError(t, err)
 
@@ -122,4 +122,9 @@ func TestTransactionMpxRollback(t *testing.T) {
 	var person dbrPerson
 	err = txMpx.Select("*").From("dbr_people").Where(Eq("id", id)).LoadOne(&person)
 	require.Error(t, err)
+
+	// close the queue so it finishes processing all work
+	require.NoError(t, sessMpx.Close())
+
+	secondaryLogTracer.RequireEqual(t)
 }

@@ -237,6 +237,18 @@ func TestBasicCRUDMpx(t *testing.T) {
 	sessMpx := createSessionMpx(ctx, "postgres", postgresDSN+"sslmode=disable", "mysql", mysqlDSN+"root@/dbr")
 	resetMpx(t, sessMpx)
 
+	expectedEvents := []evt{
+		secondaryExecEvt,  // insert
+		secondaryExecEvt,  // update
+		secondaryExecEvt,  // delete
+		secondaryCloseEvt, // from sessMpx.Close()
+	}
+
+	secondaryLogTracer := newRequireTraceReceiver()
+
+	sessMpx.SetSecondaryEventReceiver(secondaryLogTracer)
+	secondaryLogTracer.SetExpected(expectedEvents)
+
 	jonathan := dbrPerson{
 		Name:  "jonathan",
 		Email: "jonathan@uservoice.com",
@@ -257,10 +269,6 @@ func TestBasicCRUDMpx(t *testing.T) {
 	primaryRowsAffected, err := result.RowsAffected()
 	require.NoError(t, err)
 	require.Equal(t, int64(1), primaryRowsAffected)
-
-	//secondaryRowsAffected, err := secondaryResult.RowsAffected()
-	//require.NoError(t, err)
-	//require.Equal(t, int64(1), secondaryRowsAffected)
 
 	require.True(t, jonathan.Id > 0)
 
@@ -291,10 +299,6 @@ func TestBasicCRUDMpx(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, int64(1), primaryRowsAffected)
 
-	//secondaryRowsAffected, err = secondaryResult.RowsAffected()
-	//require.NoError(t, err)
-	//require.Equal(t, int64(1), secondaryRowsAffected)
-
 	var n NullInt64
 	sessMpx.Select("count(*)").From("dbr_people").Where("name = ?", "jonathan1").LoadOne(&n)
 	require.Equal(t, int64(1), n.Int64)
@@ -307,16 +311,15 @@ func TestBasicCRUDMpx(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, int64(1), primaryRowsAffected)
 
-	//secondaryRowsAffected, err = secondaryResult.RowsAffected()
-	//require.NoError(t, err)
-	//require.Equal(t, int64(1), secondaryRowsAffected)
-
 	// select id
 	ids, err = sessMpx.Select("id").From("dbr_people").ReturnInt64s()
 	require.NoError(t, err)
 	require.Equal(t, 0, len(ids))
 
-	// todo check that the event receiver has the correct logs
+	// close the queue so it finishes processing all work
+	require.NoError(t, sessMpx.Close())
+
+	secondaryLogTracer.RequireEqual(t)
 }
 
 func TestTimeout(t *testing.T) {
@@ -370,12 +373,24 @@ func TestTimeout(t *testing.T) {
 	}
 }
 
-func TestPrimaryTimeoutMpx(t *testing.T) {
+func TestTimeoutMpx(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	sessMpx := createSessionMpx(ctx, "postgres", postgresDSN+"sslmode=disable", "mysql", mysqlDSN+"root@/dbr")
 	resetMpx(t, sessMpx)
+
+	// if the primary deadline passes
+	// secondary statements won't run
+	expectedEvents := []evt{
+		secondaryBeginEvt, // begin
+		secondaryCloseEvt, // from sessMpx.Close()
+	}
+
+	secondaryLogTracer := newRequireTraceReceiver()
+
+	sessMpx.SetSecondaryEventReceiver(secondaryLogTracer)
+	secondaryLogTracer.SetExpected(expectedEvents)
 
 	// session op timeout
 	sessMpx.Timeout = time.Nanosecond
@@ -388,17 +403,14 @@ func TestPrimaryTimeoutMpx(t *testing.T) {
 	_, err = sessMpx.InsertInto("dbr_people").Columns("name", "email").Values("test", "test@test.com").Exec()
 	require.Equal(t, context.DeadlineExceeded, err)
 	require.Equal(t, 2, sessMpx.PrimaryEventReceiver.(*testTraceReceiver).errored)
-	require.Equal(t, 0, sessMpx.SecondaryEventReceiver.(*testTraceReceiver).errored)
 
 	_, err = sessMpx.Update("dbr_people").Set("name", "test1").Exec()
 	require.Equal(t, context.DeadlineExceeded, err)
 	require.Equal(t, 3, sessMpx.PrimaryEventReceiver.(*testTraceReceiver).errored)
-	require.Equal(t, 0, sessMpx.SecondaryEventReceiver.(*testTraceReceiver).errored)
 
 	_, err = sessMpx.DeleteFrom("dbr_people").Exec()
 	require.Equal(t, context.DeadlineExceeded, err)
 	require.Equal(t, 4, sessMpx.PrimaryEventReceiver.(*testTraceReceiver).errored)
-	require.Equal(t, 0, sessMpx.SecondaryEventReceiver.(*testTraceReceiver).errored)
 
 	// tx op timeout
 	sessMpx.Timeout = 0
@@ -421,4 +433,9 @@ func TestPrimaryTimeoutMpx(t *testing.T) {
 
 	_, err = txMpx.DeleteFrom("dbr_people").Exec()
 	require.Equal(t, context.DeadlineExceeded, err)
+
+	// close the queue so it finishes processing all work
+	require.NoError(t, sessMpx.Close())
+
+	secondaryLogTracer.RequireEqual(t)
 }

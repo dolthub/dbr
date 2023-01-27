@@ -49,7 +49,9 @@ type Connection struct {
 	EventReceiver
 }
 
-// ConnectionMpx multiplexes two connections
+// ConnectionMpx multiplexes two connections.
+// It uses a Queue to execute statements against the secondary
+// connection
 type ConnectionMpx struct {
 	PrimaryConn   *Connection
 	SecondaryConn *Connection
@@ -168,14 +170,15 @@ func (sessMpx *SessionMpx) ExecContext(ctx context.Context, query string, args .
 }
 
 func (sessMpx *SessionMpx) QueryContext(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error) {
-	j := NewJob("dbr.secondary.query_context", map[string]string{"sql": query}, func() error {
-		_, err := sessMpx.SecondaryQueryContext(ctx, query, args...)
-		return err
-	})
-	err := sessMpx.AddJob(j)
-	if err != nil {
-		return nil, err
-	}
+	// TODO: read from secondary db
+	//j := NewJob("dbr.secondary.query_context", map[string]string{"sql": query}, func() error {
+	//	_, err := sessMpx.SecondaryQueryContext(ctx, query, args...)
+	//	return err
+	//})
+	//err := sessMpx.AddJob(j)
+	//if err != nil {
+	//	return nil, err
+	//}
 	return sessMpx.PrimaryQueryContext(ctx, query, args...)
 }
 
