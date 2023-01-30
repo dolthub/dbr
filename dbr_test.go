@@ -50,7 +50,7 @@ func createSessionMpx(ctx context.Context, primaryDriver, primaryDsn, secondaryD
 
 var (
 	mysqlSession          = createSession("mysql", mysqlDSN)
-	postgresSession       = createSession("postgres", postgresDSN+"sslmode=disable") // TODO: remove sslmode before merge
+	postgresSession       = createSession("postgres", postgresDSN)
 	postgresBinarySession = createSession("postgres", postgresDSN+"&binary_parameters=yes")
 	sqlite3Session        = createSession("sqlite3", sqlite3DSN)
 	mssqlSession          = createSession("mssql", mssqlDSN)
