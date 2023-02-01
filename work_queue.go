@@ -9,7 +9,6 @@ import (
 )
 
 type Job struct {
-	wg    *sync.WaitGroup
 	event string
 	kvs
 	exec func() error
@@ -24,17 +23,14 @@ func NewJob(event string, kvs kvs, exec func() error) *Job {
 }
 
 func (j *Job) Run() error {
-	defer j.wg.Done()
 	return j.exec()
 }
 
 type Queue struct {
 	ctx      context.Context
-	cancel   context.CancelFunc
 	eg       *errgroup.Group
-	wg       *sync.WaitGroup
+	m        *sync.Mutex
 	jobs     chan *Job
-	stop     chan struct{}
 	isClosed *atomic.Bool
 	log      EventReceiver
 }
@@ -43,44 +39,37 @@ func (q *Queue) AddJob(j *Job) error {
 	if q.isClosed.Load() {
 		return errors.New("failed to add job, secondary queue has been closed")
 	}
-	q.wg.Add(1)
-	j.wg = q.wg
+	q.m.Lock()
+	defer q.m.Unlock()
 	q.jobs <- j
 	return nil
 }
 
 func (q *Queue) SetEventReceiver(log EventReceiver) {
+	q.m.Lock()
+	defer q.m.Unlock()
 	q.log = log
 }
 
 func (q *Queue) Close() error {
-	// stop allowing new jobs
-	q.stop <- struct{}{}
-	close(q.stop)
+	q.m.Lock()
+	defer q.m.Unlock()
 
-	// wait for outstanding jobs
-	// to complete
-	q.wg.Wait()
-
-	// shut down job receiver
-	q.cancel()
+	q.isClosed.Swap(true)
 
 	close(q.jobs)
 	return q.eg.Wait()
 }
 
 func NewWorkingQueue(ctx context.Context, buffer int, log EventReceiver) *Queue {
-	ctx, cancel := context.WithCancel(ctx)
 	eg, egCtx := errgroup.WithContext(ctx)
 	b := &atomic.Bool{}
 	b.Store(false)
 	q := &Queue{
 		ctx:      egCtx,
-		cancel:   cancel,
 		eg:       eg,
-		wg:       &sync.WaitGroup{},
+		m:        &sync.Mutex{},
 		jobs:     make(chan *Job, buffer),
-		stop:     make(chan struct{}),
 		log:      log,
 		isClosed: b,
 	}
@@ -92,25 +81,14 @@ func (q *Queue) DoWork() {
 	q.eg.Go(func() error {
 		for {
 			select {
-			case <-q.ctx.Done():
-				return nil
-			case <-q.stop:
-				q.isClosed.Swap(true)
-				return nil
-			default:
-				continue
-			}
-		}
-	})
 
-	q.eg.Go(func() error {
-		for {
-			select {
 			case <-q.ctx.Done():
 				return nil
+				//case <
 			case j, ok := <-q.jobs:
 				if !ok {
-					return errors.New("failed to read job from queue")
+					//return errors.New("failed to read job from queue")
+					return nil
 				}
 				err := j.Run()
 				if err != nil {
