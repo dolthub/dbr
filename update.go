@@ -21,6 +21,9 @@ type UpdateStmt struct {
 	LimitCount   int64
 	comments     Comments
 	indexHints   []Builder
+
+	exec  func(ctx context.Context, builder Builder) (sql.Result, string, error)
+	query func(ctx context.Context, builder Builder, dest interface{}) (string, error)
 }
 
 type UpdateBuilder = UpdateStmt
@@ -108,6 +111,31 @@ func (sess *Session) Update(table string) *UpdateStmt {
 	b.runner = sess
 	b.EventReceiver = sess.EventReceiver
 	b.Dialect = sess.Dialect
+	b.exec = func(ctx context.Context, builder Builder) (sql.Result, string, error) {
+		return exec(ctx, sess, sess.EventReceiver, b, sess.Dialect)
+	}
+	b.query = func(ctx context.Context, builder Builder, dest interface{}) (string, error) {
+		_, qStr, err := query(ctx, sess, sess.EventReceiver, b, sess.Dialect, dest)
+		return qStr, err
+	}
+	return b
+}
+
+// Update creates an UpdateStmt.
+func (smpx *SessionMpx) Update(table string) *UpdateStmt {
+	b := Update(table)
+	b.runner = smpx
+
+	b.EventReceiver = smpx.PrimaryEventReceiver
+	b.Dialect = smpx.PrimaryConn.Dialect
+
+	b.exec = func(ctx context.Context, builder Builder) (sql.Result, string, error) {
+		return execMpx(ctx, smpx, smpx.PrimaryEventReceiver, smpx.SecondaryEventReceiver, b, smpx.PrimaryConn.Dialect, smpx.SecondaryConn.Dialect)
+	}
+	b.query = func(ctx context.Context, builder Builder, dest interface{}) (string, error) {
+		_, qStr, err := queryMpx(ctx, smpx, smpx.PrimaryEventReceiver, smpx.SecondaryEventReceiver, b, smpx.PrimaryConn.Dialect, smpx.SecondaryConn.Dialect, dest)
+		return qStr, err
+	}
 	return b
 }
 
@@ -117,6 +145,31 @@ func (tx *Tx) Update(table string) *UpdateStmt {
 	b.runner = tx
 	b.EventReceiver = tx.EventReceiver
 	b.Dialect = tx.Dialect
+	b.exec = func(ctx context.Context, builder Builder) (sql.Result, string, error) {
+		return exec(ctx, tx, tx.EventReceiver, b, tx.Dialect)
+	}
+	b.query = func(ctx context.Context, builder Builder, dest interface{}) (string, error) {
+		_, qStr, err := query(ctx, tx, tx.EventReceiver, b, tx.Dialect, dest)
+		return qStr, err
+	}
+	return b
+}
+
+// Update creates an UpdateStmt.
+func (txMpx *TxMpx) Update(table string) *UpdateStmt {
+	b := Update(table)
+	b.runner = txMpx
+
+	b.EventReceiver = txMpx.PrimaryTx.EventReceiver
+	b.Dialect = txMpx.PrimaryTx.Dialect
+
+	b.exec = func(ctx context.Context, builder Builder) (sql.Result, string, error) {
+		return execMpx(ctx, txMpx, txMpx.PrimaryTx.EventReceiver, txMpx.SecondaryTx.EventReceiver, b, txMpx.PrimaryTx.Dialect, txMpx.SecondaryTx.Dialect)
+	}
+	b.query = func(ctx context.Context, builder Builder, dest interface{}) (string, error) {
+		_, qStr, err := queryMpx(ctx, txMpx, txMpx.PrimaryTx.EventReceiver, txMpx.SecondaryTx.EventReceiver, b, txMpx.PrimaryTx.Dialect, txMpx.SecondaryTx.Dialect, dest)
+		return qStr, err
+	}
 	return b
 }
 
@@ -133,20 +186,70 @@ func UpdateBySql(query string, value ...interface{}) *UpdateStmt {
 }
 
 // UpdateBySql creates an UpdateStmt with raw query.
-func (sess *Session) UpdateBySql(query string, value ...interface{}) *UpdateStmt {
-	b := UpdateBySql(query, value...)
+func (sess *Session) UpdateBySql(queryStr string, value ...interface{}) *UpdateStmt {
+	b := UpdateBySql(queryStr, value...)
 	b.runner = sess
 	b.EventReceiver = sess.EventReceiver
 	b.Dialect = sess.Dialect
+	b.exec = func(ctx context.Context, builder Builder) (sql.Result, string, error) {
+		return exec(ctx, sess, sess.EventReceiver, b, sess.Dialect)
+	}
+	b.query = func(ctx context.Context, builder Builder, dest interface{}) (string, error) {
+		_, qStr, err := query(ctx, sess, sess.EventReceiver, b, sess.Dialect, dest)
+		return qStr, err
+	}
 	return b
 }
 
 // UpdateBySql creates an UpdateStmt with raw query.
-func (tx *Tx) UpdateBySql(query string, value ...interface{}) *UpdateStmt {
+func (smpx *SessionMpx) UpdateBySql(query string, value ...interface{}) *UpdateStmt {
 	b := UpdateBySql(query, value...)
+	b.runner = smpx
+
+	b.EventReceiver = smpx.PrimaryEventReceiver
+	b.Dialect = smpx.PrimaryConn.Dialect
+
+	b.exec = func(ctx context.Context, builder Builder) (sql.Result, string, error) {
+		return execMpx(ctx, smpx, smpx.PrimaryEventReceiver, smpx.SecondaryEventReceiver, b, smpx.PrimaryConn.Dialect, smpx.SecondaryConn.Dialect)
+	}
+	b.query = func(ctx context.Context, builder Builder, dest interface{}) (string, error) {
+		_, qStr, err := queryMpx(ctx, smpx, smpx.PrimaryEventReceiver, smpx.SecondaryEventReceiver, b, smpx.PrimaryConn.Dialect, smpx.SecondaryConn.Dialect, dest)
+		return qStr, err
+	}
+	return b
+}
+
+// UpdateBySql creates an UpdateStmt with raw query.
+func (tx *Tx) UpdateBySql(queryStr string, value ...interface{}) *UpdateStmt {
+	b := UpdateBySql(queryStr, value...)
 	b.runner = tx
 	b.EventReceiver = tx.EventReceiver
 	b.Dialect = tx.Dialect
+	b.exec = func(ctx context.Context, builder Builder) (sql.Result, string, error) {
+		return exec(ctx, tx, tx.EventReceiver, b, tx.Dialect)
+	}
+	b.query = func(ctx context.Context, builder Builder, dest interface{}) (string, error) {
+		_, qStr, err := query(ctx, tx, tx.EventReceiver, b, tx.Dialect, dest)
+		return qStr, err
+	}
+	return b
+}
+
+// UpdateBySql creates an UpdateStmt with raw query.
+func (txMpx *TxMpx) UpdateBySql(query string, value ...interface{}) *UpdateStmt {
+	b := UpdateBySql(query, value...)
+	b.runner = txMpx
+
+	b.EventReceiver = txMpx.PrimaryTx.EventReceiver
+	b.Dialect = txMpx.PrimaryTx.Dialect
+
+	b.exec = func(ctx context.Context, builder Builder) (sql.Result, string, error) {
+		return execMpx(ctx, txMpx, txMpx.PrimaryTx.EventReceiver, txMpx.SecondaryTx.EventReceiver, b, txMpx.PrimaryTx.Dialect, txMpx.SecondaryTx.Dialect)
+	}
+	b.query = func(ctx context.Context, builder Builder, dest interface{}) (string, error) {
+		_, qStr, err := queryMpx(ctx, txMpx, txMpx.PrimaryTx.EventReceiver, txMpx.SecondaryTx.EventReceiver, b, txMpx.PrimaryTx.Dialect, txMpx.SecondaryTx.Dialect, dest)
+		return qStr, err
+	}
 	return b
 }
 
@@ -209,22 +312,21 @@ func (b *UpdateStmt) Exec() (sql.Result, error) {
 }
 
 func (b *UpdateStmt) ExecContext(ctx context.Context) (sql.Result, error) {
-	res, _, err := exec(ctx, b.runner, b.EventReceiver, b, b.Dialect)
+	res, _, err := b.exec(ctx, b)
 	return res, err
 }
 
 func (b *UpdateStmt) ExecContextDebug(ctx context.Context) (sql.Result, string, error) {
-	return exec(ctx, b.runner, b.EventReceiver, b, b.Dialect)
+	return b.exec(ctx, b)
 }
 
 func (b *UpdateStmt) LoadContext(ctx context.Context, value interface{}) error {
-	_, _, err := query(ctx, b.runner, b.EventReceiver, b, b.Dialect, value)
+	_, err := b.query(ctx, b, value)
 	return err
 }
 
 func (b *UpdateStmt) LoadContextDebug(ctx context.Context, value interface{}) (string, error) {
-	_, queryStr, err := query(ctx, b.runner, b.EventReceiver, b, b.Dialect, value)
-	return queryStr, err
+	return b.query(ctx, b, value)
 }
 
 func (b *UpdateStmt) Load(value interface{}) error {

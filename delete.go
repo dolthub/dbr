@@ -19,6 +19,8 @@ type DeleteStmt struct {
 	LimitCount int64
 
 	comments Comments
+
+	exec func(ctx context.Context, builder Builder) (sql.Result, string, error)
 }
 
 type DeleteBuilder = DeleteStmt
@@ -68,6 +70,23 @@ func (sess *Session) DeleteFrom(table string) *DeleteStmt {
 	b.runner = sess
 	b.EventReceiver = sess.EventReceiver
 	b.Dialect = sess.Dialect
+	b.exec = func(ctx context.Context, builder Builder) (sql.Result, string, error) {
+		return exec(ctx, sess, sess.EventReceiver, b, sess.Dialect)
+	}
+	return b
+}
+
+// DeleteFrom creates a DeleteStmt.
+func (smpx *SessionMpx) DeleteFrom(table string) *DeleteStmt {
+	b := DeleteFrom(table)
+	b.runner = smpx
+
+	b.EventReceiver = smpx.PrimaryEventReceiver
+	b.Dialect = smpx.PrimaryConn.Dialect
+
+	b.exec = func(ctx context.Context, builder Builder) (sql.Result, string, error) {
+		return execMpx(ctx, smpx, smpx.PrimaryEventReceiver, smpx.SecondaryEventReceiver, b, smpx.PrimaryConn.Dialect, smpx.SecondaryConn.Dialect)
+	}
 	return b
 }
 
@@ -77,6 +96,23 @@ func (tx *Tx) DeleteFrom(table string) *DeleteStmt {
 	b.runner = tx
 	b.EventReceiver = tx.EventReceiver
 	b.Dialect = tx.Dialect
+	b.exec = func(ctx context.Context, builder Builder) (sql.Result, string, error) {
+		return exec(ctx, tx, tx.EventReceiver, b, tx.Dialect)
+	}
+	return b
+}
+
+// DeleteFrom creates a DeleteStmt.
+func (txMpx *TxMpx) DeleteFrom(table string) *DeleteStmt {
+	b := DeleteFrom(table)
+	b.runner = txMpx
+
+	b.EventReceiver = txMpx.PrimaryTx.EventReceiver
+	b.Dialect = txMpx.PrimaryTx.Dialect
+
+	b.exec = func(ctx context.Context, builder Builder) (sql.Result, string, error) {
+		return execMpx(ctx, txMpx, txMpx.PrimaryTx.EventReceiver, txMpx.SecondaryTx.EventReceiver, b, txMpx.PrimaryTx.Dialect, txMpx.SecondaryTx.Dialect)
+	}
 	return b
 }
 
@@ -92,20 +128,54 @@ func DeleteBySql(query string, value ...interface{}) *DeleteStmt {
 }
 
 // DeleteBySql creates a DeleteStmt from raw query.
-func (sess *Session) DeleteBySql(query string, value ...interface{}) *DeleteStmt {
-	b := DeleteBySql(query, value...)
+func (sess *Session) DeleteBySql(queryStr string, value ...interface{}) *DeleteStmt {
+	b := DeleteBySql(queryStr, value...)
 	b.runner = sess
 	b.EventReceiver = sess.EventReceiver
 	b.Dialect = sess.Dialect
+	b.exec = func(ctx context.Context, builder Builder) (sql.Result, string, error) {
+		return exec(ctx, sess, sess.EventReceiver, b, sess.Dialect)
+	}
 	return b
 }
 
 // DeleteBySql creates a DeleteStmt from raw query.
-func (tx *Tx) DeleteBySql(query string, value ...interface{}) *DeleteStmt {
+func (smpx *SessionMpx) DeleteBySql(query string, value ...interface{}) *DeleteStmt {
 	b := DeleteBySql(query, value...)
+	b.runner = smpx
+
+	b.EventReceiver = smpx.PrimaryEventReceiver
+	b.Dialect = smpx.PrimaryConn.Dialect
+
+	b.exec = func(ctx context.Context, builder Builder) (sql.Result, string, error) {
+		return execMpx(ctx, smpx, smpx.PrimaryEventReceiver, smpx.SecondaryEventReceiver, b, smpx.PrimaryConn.Dialect, smpx.SecondaryConn.Dialect)
+	}
+	return b
+}
+
+// DeleteBySql creates a DeleteStmt from raw query.
+func (tx *Tx) DeleteBySql(queryStr string, value ...interface{}) *DeleteStmt {
+	b := DeleteBySql(queryStr, value...)
 	b.runner = tx
 	b.EventReceiver = tx.EventReceiver
 	b.Dialect = tx.Dialect
+	b.exec = func(ctx context.Context, builder Builder) (sql.Result, string, error) {
+		return exec(ctx, tx, tx.EventReceiver, b, tx.Dialect)
+	}
+	return b
+}
+
+// DeleteBySql creates a DeleteStmt from raw query.
+func (txMpx *TxMpx) DeleteBySql(query string, value ...interface{}) *DeleteStmt {
+	b := DeleteBySql(query, value...)
+	b.runner = txMpx
+
+	b.EventReceiver = txMpx.PrimaryTx.EventReceiver
+	b.Dialect = txMpx.PrimaryTx.Dialect
+
+	b.exec = func(ctx context.Context, builder Builder) (sql.Result, string, error) {
+		return execMpx(ctx, txMpx, txMpx.PrimaryTx.EventReceiver, txMpx.SecondaryTx.EventReceiver, b, txMpx.PrimaryTx.Dialect, txMpx.SecondaryTx.Dialect)
+	}
 	return b
 }
 
@@ -136,10 +206,10 @@ func (b *DeleteStmt) Exec() (sql.Result, error) {
 }
 
 func (b *DeleteStmt) ExecContext(ctx context.Context) (sql.Result, error) {
-	res, _, err := exec(ctx, b.runner, b.EventReceiver, b, b.Dialect)
+	res, _, err := b.exec(ctx, b)
 	return res, err
 }
 
 func (b *DeleteStmt) ExecContextDebug(ctx context.Context) (sql.Result, string, error) {
-	return exec(ctx, b.runner, b.EventReceiver, b, b.Dialect)
+	return b.exec(ctx, b)
 }

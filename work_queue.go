@@ -5,6 +5,7 @@ import (
 	"errors"
 	"golang.org/x/sync/errgroup"
 	"sync"
+	"sync/atomic"
 )
 
 type Job struct {
@@ -34,12 +35,12 @@ type Queue struct {
 	wg       *sync.WaitGroup
 	jobs     chan *Job
 	stop     chan struct{}
-	isClosed bool
+	isClosed *atomic.Bool
 	log      EventReceiver
 }
 
 func (q *Queue) AddJob(j *Job) error {
-	if q.isClosed {
+	if q.isClosed.Load() {
 		return errors.New("failed to add job, secondary queue has been closed")
 	}
 	q.wg.Add(1)
@@ -71,14 +72,17 @@ func (q *Queue) Close() error {
 func NewWorkingQueue(ctx context.Context, buffer int, log EventReceiver) *Queue {
 	ctx, cancel := context.WithCancel(ctx)
 	eg, egCtx := errgroup.WithContext(ctx)
+	b := &atomic.Bool{}
+	b.Store(false)
 	q := &Queue{
-		ctx:    egCtx,
-		cancel: cancel,
-		eg:     eg,
-		wg:     &sync.WaitGroup{},
-		jobs:   make(chan *Job, buffer),
-		stop:   make(chan struct{}),
-		log:    log,
+		ctx:      egCtx,
+		cancel:   cancel,
+		eg:       eg,
+		wg:       &sync.WaitGroup{},
+		jobs:     make(chan *Job, buffer),
+		stop:     make(chan struct{}),
+		log:      log,
+		isClosed: b,
 	}
 	q.DoWork()
 	return q
@@ -91,7 +95,7 @@ func (q *Queue) DoWork() {
 			case <-q.ctx.Done():
 				return nil
 			case <-q.stop:
-				q.isClosed = true
+				q.isClosed.Swap(true)
 				return nil
 			default:
 				continue
@@ -110,8 +114,8 @@ func (q *Queue) DoWork() {
 				}
 				err := j.Run()
 				if err != nil {
-					// skip logging if theres no event name
-					// let the job handle the loggin on its own
+					// skip logging if there's no event name
+					// let the job handle the login on its own
 					if j.event != "" {
 						if len(j.kvs) > 0 {
 							q.log.EventErrKv(j.event, err, j.kvs)

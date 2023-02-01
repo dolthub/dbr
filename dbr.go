@@ -218,10 +218,10 @@ func (connMpx *ConnectionMpx) NewSessionMpx(ctx context.Context, primaryLog, sec
 // Ensure that tx and session are session runner
 // ensure the txmpx and sessionmpx are runnermpx
 var (
-	_ SessionRunner    = (*Tx)(nil)
-	_ SessionRunner    = (*Session)(nil)
-	_ SessionRunnerMpx = (*TxMpx)(nil)
-	_ SessionRunnerMpx = (*SessionMpx)(nil)
+	_ SessionRunner = (*Tx)(nil)
+	_ SessionRunner = (*Session)(nil)
+	_ SessionRunner = (*TxMpx)(nil)
+	_ SessionRunner = (*SessionMpx)(nil)
 )
 
 // SessionRunner can do anything that a Session can except start a transaction.
@@ -238,22 +238,6 @@ type SessionRunner interface {
 
 	DeleteFrom(table string) *DeleteBuilder
 	DeleteBySql(query string, value ...interface{}) *DeleteBuilder
-}
-
-// SessionRunnerMpx can do anything that a Session can except start a transaction.
-// Both SessionMpx and TxMpx implements this interface.
-type SessionRunnerMpx interface {
-	Select(column ...string) *SelectBuilder
-	SelectBySql(query string, value ...interface{}) *SelectBuilder
-
-	InsertInto(table string) *InsertBuilderMpx
-	InsertBySql(query string, value ...interface{}) *InsertBuilderMpx
-
-	Update(table string) *UpdateBuilderMpx
-	UpdateBySql(query string, value ...interface{}) *UpdateBuilderMpx
-
-	DeleteFrom(table string) *DeleteBuilderMpx
-	DeleteBySql(query string, value ...interface{}) *DeleteBuilderMpx
 }
 
 type runner interface {
@@ -522,7 +506,7 @@ func query(ctx context.Context, runner runner, log EventReceiver, builder Builde
 	return count, query, nil
 }
 
-func queryRowsMpx(ctx context.Context, runnerMpx RunnerMpx, primaryLog, secondaryLog EventReceiver, builder Builder, primaryD, secondaryD Dialect, primaryDest interface{}) (int, string, error) {
+func queryRowsMpx(ctx context.Context, runnerMpx RunnerMpx, primaryLog, secondaryLog EventReceiver, builder Builder, primaryD, secondaryD Dialect) (string, *sql.Rows, error) {
 	// discard the timeout set in the runner, the context should not be canceled
 	// implicitly here but explicitly by the caller since the returned *sql.Rows
 	// may still listening to the context
@@ -534,7 +518,7 @@ func queryRowsMpx(ctx context.Context, runnerMpx RunnerMpx, primaryLog, secondar
 	err := primaryI.encodePlaceholder(builder, true)
 	primaryQuery, primaryValue := primaryI.String(), primaryI.Value()
 	if err != nil {
-		return 0, primaryQuery, primaryLog.EventErrKv("dbr.primary.select.interpolate", err, kvs{
+		return primaryQuery, nil, primaryLog.EventErrKv("dbr.primary.select.interpolate", err, kvs{
 			"sql":  primaryQuery,
 			"args": fmt.Sprint(primaryValue),
 		})
@@ -558,14 +542,7 @@ func queryRowsMpx(ctx context.Context, runnerMpx RunnerMpx, primaryLog, secondar
 		if primaryHasTracingImpl {
 			primaryTraceImpl.SpanError(ctx, err)
 		}
-		return 0, primaryQuery, primaryLog.EventErrKv("dbr.primary.select.load.query", err, kvs{
-			"sql": primaryQuery,
-		})
-	}
-
-	primaryCount, err := Load(primaryRows, primaryDest)
-	if err != nil {
-		return 0, primaryQuery, primaryLog.EventErrKv("dbr.primary.select.load.scan", err, kvs{
+		return primaryQuery, nil, primaryLog.EventErrKv("dbr.primary.select.load.query", err, kvs{
 			"sql": primaryQuery,
 		})
 	}
@@ -599,7 +576,7 @@ func queryRowsMpx(ctx context.Context, runnerMpx RunnerMpx, primaryLog, secondar
 				defer secondaryTraceImpl.SpanFinish(ctx)
 			}
 
-			secondaryRows, rerr := runnerMpx.SecondaryQueryContext(ctx, secondaryQuery, secondaryValue...)
+			_, rerr = runnerMpx.SecondaryQueryContext(ctx, secondaryQuery, secondaryValue...)
 			if rerr != nil {
 				if secondaryHasTracingImpl {
 					secondaryTraceImpl.SpanError(ctx, rerr)
@@ -609,30 +586,15 @@ func queryRowsMpx(ctx context.Context, runnerMpx RunnerMpx, primaryLog, secondar
 				})
 			}
 
-			// assert primary and secondary are same
-			secondaryCount := 0
-			for secondaryRows.Next() {
-				secondaryCount++
-			}
-
-			if secondaryCount != primaryCount {
-				return secondaryLog.EventErrKv("dbr.secondary.primary.query.assertion.error", errors.New("count not equal"), kvs{
-					"primarySql":    primaryQuery,
-					"primaryArgs":   fmt.Sprint(primaryValue),
-					"secondarySql":  secondaryQuery,
-					"secondaryArgs": fmt.Sprint(secondaryValue),
-				})
-			}
-
 			return nil
 		},
 	}
 	err = runnerMpx.AddJob(j)
 	if err != nil {
-		return 0, "", err
+		return "", nil, err
 	}
 
-	return primaryCount, primaryQuery, nil
+	return primaryQuery, primaryRows, nil
 }
 
 func queryMpx(ctx context.Context, runnerMpx RunnerMpx, primaryLog, secondaryLog EventReceiver, builder Builder, primaryD, secondaryD Dialect, primaryDest interface{}) (int, string, error) {
@@ -643,5 +605,11 @@ func queryMpx(ctx context.Context, runnerMpx RunnerMpx, primaryLog, secondaryLog
 		defer cancel()
 	}
 
-	return queryRowsMpx(ctx, runnerMpx, primaryLog, secondaryLog, builder, primaryD, secondaryD, primaryDest)
+	query, rows, err := queryRowsMpx(ctx, runnerMpx, primaryLog, secondaryLog, builder, primaryD, secondaryD)
+	count, err := Load(rows, primaryDest)
+	if err != nil {
+		return 0, "", err
+	}
+
+	return count, query, err
 }

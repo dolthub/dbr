@@ -34,6 +34,9 @@ type SelectStmt struct {
 	comments Comments
 
 	indexHints []Builder
+
+	query     func(ctx context.Context, builder Builder, dest interface{}) (int, string, error)
+	queryRows func(ctx context.Context, builder Builder) (*sql.Rows, error)
 }
 
 type SelectBuilder = SelectStmt
@@ -228,14 +231,29 @@ func (sess *Session) Select(column ...string) *SelectStmt {
 	b.runner = sess
 	b.EventReceiver = sess.EventReceiver
 	b.Dialect = sess.Dialect
+	b.query = func(ctx context.Context, builder Builder, dest interface{}) (int, string, error) {
+		return query(ctx, sess, sess.EventReceiver, b, sess.Dialect, dest)
+	}
+	b.queryRows = func(ctx context.Context, builder Builder) (*sql.Rows, error) {
+		_, rows, err := queryRows(ctx, sess, sess.EventReceiver, b, sess.Dialect)
+		return rows, err
+	}
 	return b
 }
 
-func (sessMpx *SessionMpx) Select(column ...string) *SelectBuilder {
+// Select creates a SelectStmt.
+func (sessMpx *SessionMpx) Select(column ...string) *SelectStmt {
 	b := Select(prepareSelect(column)...)
 	b.runner = sessMpx
 	b.EventReceiver = sessMpx.PrimaryEventReceiver
 	b.Dialect = sessMpx.PrimaryConn.Dialect
+	b.query = func(ctx context.Context, builder Builder, dest interface{}) (int, string, error) {
+		return query(ctx, sessMpx, sessMpx.PrimaryEventReceiver, b, sessMpx.PrimaryConn.Dialect, dest)
+	}
+	b.queryRows = func(ctx context.Context, builder Builder) (*sql.Rows, error) {
+		_, rows, err := queryRows(ctx, sessMpx, sessMpx.PrimaryEventReceiver, b, sessMpx.PrimaryConn.Dialect)
+		return rows, err
+	}
 	return b
 }
 
@@ -245,14 +263,29 @@ func (tx *Tx) Select(column ...string) *SelectStmt {
 	b.runner = tx
 	b.EventReceiver = tx.EventReceiver
 	b.Dialect = tx.Dialect
+	b.query = func(ctx context.Context, builder Builder, dest interface{}) (int, string, error) {
+		return query(ctx, tx, tx.EventReceiver, b, tx.Dialect, dest)
+	}
+	b.queryRows = func(ctx context.Context, builder Builder) (*sql.Rows, error) {
+		_, rows, err := queryRows(ctx, tx, tx.EventReceiver, b, tx.Dialect)
+		return rows, err
+	}
 	return b
 }
 
-func (txMpx *TxMpx) Select(column ...string) *SelectBuilder {
+// Select creates a SelectStmt.
+func (txMpx *TxMpx) Select(column ...string) *SelectStmt {
 	b := Select(prepareSelect(column)...)
 	b.runner = txMpx
 	b.EventReceiver = txMpx.PrimaryTx.EventReceiver
 	b.Dialect = txMpx.PrimaryTx.Dialect
+	b.query = func(ctx context.Context, builder Builder, dest interface{}) (int, string, error) {
+		return query(ctx, txMpx, txMpx.PrimaryTx.EventReceiver, b, txMpx.PrimaryTx.Dialect, dest)
+	}
+	b.queryRows = func(ctx context.Context, builder Builder) (*sql.Rows, error) {
+		_, rows, err := queryRows(ctx, txMpx, txMpx.PrimaryTx.EventReceiver, b, txMpx.PrimaryTx.Dialect)
+		return rows, err
+	}
 	return b
 }
 
@@ -269,36 +302,66 @@ func SelectBySql(query string, value ...interface{}) *SelectStmt {
 }
 
 // SelectBySql creates a SelectStmt from raw query.
-func (sess *Session) SelectBySql(query string, value ...interface{}) *SelectStmt {
-	b := SelectBySql(query, value...)
+func (sess *Session) SelectBySql(queryStr string, value ...interface{}) *SelectStmt {
+	b := SelectBySql(queryStr, value...)
 	b.runner = sess
 	b.EventReceiver = sess.EventReceiver
 	b.Dialect = sess.Dialect
-	return b
-}
-
-func (sessMpx *SessionMpx) SelectBySql(query string, value ...interface{}) *SelectBuilder {
-	b := SelectBySql(query, value...)
-	b.runner = sessMpx
-	b.EventReceiver = sessMpx.PrimaryEventReceiver
-	b.Dialect = sessMpx.PrimaryConn.Dialect
+	b.query = func(ctx context.Context, builder Builder, dest interface{}) (int, string, error) {
+		return query(ctx, sess, sess.EventReceiver, b, sess.Dialect, dest)
+	}
+	b.queryRows = func(ctx context.Context, builder Builder) (*sql.Rows, error) {
+		_, rows, err := queryRows(ctx, sess, sess.EventReceiver, b, sess.Dialect)
+		return rows, err
+	}
 	return b
 }
 
 // SelectBySql creates a SelectStmt from raw query.
-func (tx *Tx) SelectBySql(query string, value ...interface{}) *SelectStmt {
-	b := SelectBySql(query, value...)
-	b.runner = tx
-	b.EventReceiver = tx.EventReceiver
-	b.Dialect = tx.Dialect
+func (sessMpx *SessionMpx) SelectBySql(queryStr string, value ...interface{}) *SelectStmt {
+	b := SelectBySql(queryStr, value...)
+	b.runner = sessMpx
+	b.EventReceiver = sessMpx.PrimaryEventReceiver
+	b.Dialect = sessMpx.PrimaryConn.Dialect
+	b.query = func(ctx context.Context, builder Builder, dest interface{}) (int, string, error) {
+		return query(ctx, sessMpx, sessMpx.PrimaryEventReceiver, b, sessMpx.PrimaryConn.Dialect, dest)
+	}
+	b.queryRows = func(ctx context.Context, builder Builder) (*sql.Rows, error) {
+		_, rows, err := queryRows(ctx, sessMpx, sessMpx.PrimaryEventReceiver, b, sessMpx.PrimaryConn.Dialect)
+		return rows, err
+	}
 	return b
 }
 
-func (txMpx *TxMpx) SelectBySql(query string, value ...interface{}) *SelectBuilder {
-	b := SelectBySql(query, value...)
+// SelectBySql creates a SelectStmt from raw query.
+func (tx *Tx) SelectBySql(queryStr string, value ...interface{}) *SelectStmt {
+	b := SelectBySql(queryStr, value...)
+	b.runner = tx
+	b.EventReceiver = tx.EventReceiver
+	b.Dialect = tx.Dialect
+	b.query = func(ctx context.Context, builder Builder, dest interface{}) (int, string, error) {
+		return query(ctx, tx, tx.EventReceiver, b, tx.Dialect, dest)
+	}
+	b.queryRows = func(ctx context.Context, builder Builder) (*sql.Rows, error) {
+		_, rows, err := queryRows(ctx, tx, tx.EventReceiver, b, tx.Dialect)
+		return rows, err
+	}
+	return b
+}
+
+// SelectBySql creates a SelectStmt from raw query.
+func (txMpx *TxMpx) SelectBySql(queryStr string, value ...interface{}) *SelectStmt {
+	b := SelectBySql(queryStr, value...)
 	b.runner = txMpx
 	b.EventReceiver = txMpx.PrimaryTx.EventReceiver
 	b.Dialect = txMpx.PrimaryTx.Dialect
+	b.query = func(ctx context.Context, builder Builder, dest interface{}) (int, string, error) {
+		return query(ctx, txMpx, txMpx.PrimaryTx.EventReceiver, b, txMpx.PrimaryTx.Dialect, dest)
+	}
+	b.queryRows = func(ctx context.Context, builder Builder) (*sql.Rows, error) {
+		_, rows, err := queryRows(ctx, txMpx, txMpx.PrimaryTx.EventReceiver, b, txMpx.PrimaryTx.Dialect)
+		return rows, err
+	}
 	return b
 }
 
@@ -439,12 +502,11 @@ func (b *SelectStmt) Rows() (*sql.Rows, error) {
 }
 
 func (b *SelectStmt) RowsContext(ctx context.Context) (*sql.Rows, error) {
-	_, rows, err := queryRows(ctx, b.runner, b.EventReceiver, b, b.Dialect)
-	return rows, err
+	return b.queryRows(ctx, b)
 }
 
 func (b *SelectStmt) LoadOneContextDebug(ctx context.Context, value interface{}) (string, error) {
-	count, queryStr, err := query(ctx, b.runner, b.EventReceiver, b, b.Dialect, value)
+	count, queryStr, err := b.query(ctx, b, value)
 	if err != nil {
 		return queryStr, err
 	}
@@ -468,12 +530,12 @@ func (b *SelectStmt) LoadOne(value interface{}) error {
 }
 
 func (b *SelectStmt) LoadContext(ctx context.Context, value interface{}) (int, error) {
-	n, _, err := query(ctx, b.runner, b.EventReceiver, b, b.Dialect, value)
+	n, _, err := b.query(ctx, b, value)
 	return n, err
 }
 
 func (b *SelectStmt) LoadContextDebug(ctx context.Context, value interface{}) (int, string, error) {
-	return query(ctx, b.runner, b.EventReceiver, b, b.Dialect, value)
+	return b.query(ctx, b, value)
 }
 
 // Load loads multi-row SQL result into a slice of go variables.
@@ -490,7 +552,7 @@ func (b *SelectStmt) Iterate() (Iterator, error) {
 
 // IterateContext executes the query and returns the Iterator, or any error encountered.
 func (b *SelectStmt) IterateContext(ctx context.Context) (Iterator, error) {
-	_, rows, err := queryRows(ctx, b.runner, b.EventReceiver, b, b.Dialect)
+	rows, err := b.queryRows(ctx, b)
 	if err != nil {
 		if rows != nil {
 			rows.Close()

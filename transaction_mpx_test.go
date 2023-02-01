@@ -11,7 +11,7 @@ func TestTransactionCommitMpx(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	sessMpx := createSessionMpx(ctx, "postgres", postgresDSN+"sslmode=disable", "mysql", mysqlDSN+"root@/dbr")
+	sessMpx := createSessionMpx(ctx, "postgres", postgresDSN, "mysql", mysqlDSN)
 	resetMpx(t, sessMpx)
 
 	expectedEvents := []evt{
@@ -79,7 +79,7 @@ func TestTransactionMpxRollback(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	sessMpx := createSessionMpx(ctx, "postgres", postgresDSN+"sslmode=disable", "mysql", mysqlDSN+"root@/dbr")
+	sessMpx := createSessionMpx(ctx, "postgres", postgresDSN, "mysql", mysqlDSN)
 	resetMpx(t, sessMpx)
 
 	expectedEvents := []evt{

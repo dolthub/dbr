@@ -3,8 +3,11 @@ package dbr
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"time"
 )
+
+var ErrSecondaryTxNotFound = errors.New("secondary tx not found")
 
 // TxMpx is a multiplexed transaction created by SessionMpx.
 type TxMpx struct {
@@ -87,7 +90,7 @@ func (txMpx *TxMpx) Exec(query string, args ...interface{}) (sql.Result, error) 
 func (txMpx *TxMpx) ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
 	j := NewJob("dbr.secondary.exec_context", map[string]string{"sql": query}, func() error {
 		if txMpx.SecondaryTx.Tx == nil {
-			panic("secondary tx not found, queue out of order")
+			return ErrSecondaryTxNotFound
 		}
 
 		_, err := txMpx.SecondaryTx.ExecContext(ctx, query, args...)
@@ -103,9 +106,9 @@ func (txMpx *TxMpx) ExecContext(ctx context.Context, query string, args ...inter
 func (txMpx *TxMpx) QueryContext(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error) {
 	// TODO: read from secondary db
 	//j := NewJob("dbr.secondary.query_context", map[string]string{"sql": query}, func() error {
-	//	if txMpx.SecondaryTx.Tx == nil {
-	//		panic("secondary tx not found, queue out of order")
-	//	}
+	//if txMpx.SecondaryTx.Tx == nil {
+	//	return ErrSecondaryTxNotFound
+	//}
 	//
 	//	_, err := txMpx.SecondaryTx.QueryContext(ctx, query, args...)
 	//	return err
@@ -121,7 +124,7 @@ func (txMpx *TxMpx) QueryContext(ctx context.Context, query string, args ...inte
 func (txMpx *TxMpx) Commit() error {
 	j := NewJob("dbr.secondary.commit", nil, func() error {
 		if txMpx.SecondaryTx.Tx == nil {
-			panic("secondary tx not found, queue out of order")
+			return ErrSecondaryTxNotFound
 		}
 		return txMpx.SecondaryTx.Commit()
 	})
@@ -142,7 +145,7 @@ func (txMpx *TxMpx) Commit() error {
 func (txMpx *TxMpx) Rollback() error {
 	j := NewJob("dbr.secondary.rollback", nil, func() error {
 		if txMpx.SecondaryTx.Tx == nil {
-			panic("secondary tx not found, queue out of order")
+			return ErrSecondaryTxNotFound
 		}
 		return txMpx.SecondaryTx.Rollback()
 	})
@@ -169,7 +172,7 @@ func (txMpx *TxMpx) Rollback() error {
 func (txMpx *TxMpx) RollbackUnlessCommitted() {
 	j := &Job{exec: func() error {
 		if txMpx.SecondaryTx.Tx == nil {
-			panic("secondary tx not found, queue out of order")
+			return ErrSecondaryTxNotFound
 		}
 
 		err := txMpx.SecondaryTx.Rollback()
