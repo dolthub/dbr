@@ -72,28 +72,29 @@ func (connMpx *ConnectionMpx) AddJob(job *Job) error {
 }
 
 func (connMpx *ConnectionMpx) Exec(query string, args ...interface{}) (sql.Result, error) {
-	j := NewJob("dbr.secondary.exec", map[string]string{"sql": query}, func() error {
-		_, err := connMpx.SecondaryConn.Exec(query, args...)
-		return err
-	})
-	err := connMpx.AddJob(j)
+	primaryRes, err := connMpx.PrimaryConn.Exec(query, args...)
 	if err != nil {
 		return nil, err
 	}
 
-	return connMpx.PrimaryConn.Exec(query, args...)
+	j := NewJob("dbr.secondary.exec", map[string]string{"sql": query}, func() error {
+		_, err := connMpx.SecondaryConn.Exec(query, args...)
+		return err
+	})
+	err = connMpx.AddJob(j)
+	return primaryRes, err
 }
 
 func (connMpx *ConnectionMpx) Close() error {
-	j := NewJob("dbr.secondary.close", nil, func() error {
-		return connMpx.SecondaryConn.Close()
-	})
-	err := connMpx.AddJob(j)
+	err := connMpx.PrimaryConn.Close()
 	if err != nil {
 		return err
 	}
 
-	err = connMpx.PrimaryConn.Close()
+	j := NewJob("dbr.secondary.close", nil, func() error {
+		return connMpx.SecondaryConn.Close()
+	})
+	err = connMpx.AddJob(j)
 	if err != nil {
 		return err
 	}
@@ -158,27 +159,20 @@ func (sessMpx *SessionMpx) Exec(query string, args ...interface{}) (sql.Result, 
 }
 
 func (sessMpx *SessionMpx) ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
+	primaryRes, err := sessMpx.PrimaryExecContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+
 	j := NewJob("dbr.secondary.exec_context", map[string]string{"sql": query}, func() error {
 		_, err := sessMpx.SecondaryExecContext(ctx, query, args...)
 		return err
 	})
-	err := sessMpx.AddJob(j)
-	if err != nil {
-		return nil, err
-	}
-	return sessMpx.PrimaryExecContext(ctx, query, args...)
+	err = sessMpx.AddJob(j)
+	return primaryRes, err
 }
 
 func (sessMpx *SessionMpx) QueryContext(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error) {
-	// TODO: read from secondary db
-	//j := NewJob("dbr.secondary.query_context", map[string]string{"sql": query}, func() error {
-	//	_, err := sessMpx.SecondaryQueryContext(ctx, query, args...)
-	//	return err
-	//})
-	//err := sessMpx.AddJob(j)
-	//if err != nil {
-	//	return nil, err
-	//}
 	return sessMpx.PrimaryQueryContext(ctx, query, args...)
 }
 
