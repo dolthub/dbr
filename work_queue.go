@@ -8,6 +8,10 @@ import (
 	"sync/atomic"
 )
 
+const (
+	firstOccurrence = "__first_occurrence__"
+)
+
 type Job struct {
 	event string
 	kvs
@@ -79,24 +83,37 @@ func NewWorkingQueue(ctx context.Context, buffer int, log EventReceiver) *Queue 
 
 func (q *Queue) DoWork() {
 	q.eg.Go(func() error {
+		count := 0
 		for {
 			select {
-
 			case <-q.ctx.Done():
 				return nil
-				//case <
 			case j, ok := <-q.jobs:
 				if !ok {
-					//return errors.New("failed to read job from queue")
 					return nil
 				}
+
 				err := j.Run()
 				if err != nil {
 					// skip logging if there's no event name
-					// let the job handle the login on its own
+					// let the job handle the logging on its own
 					if j.event != "" {
+
+						var m kvs
 						if len(j.kvs) > 0 {
-							q.log.EventErrKv(j.event, err, j.kvs)
+							m = j.kvs
+						} else {
+							m = make(kvs)
+						}
+
+						// if this is the first error
+						// mark it as such for auditing
+						if count == 1 {
+							m[firstOccurrence] = "true"
+						}
+
+						if len(m) > 0 {
+							q.log.EventErrKv(j.event, err, m)
 						} else {
 							q.log.EventErr(j.event, err)
 						}
@@ -111,6 +128,8 @@ func (q *Queue) DoWork() {
 						}
 					}
 				}
+
+				count++
 			}
 		}
 	})
