@@ -95,31 +95,31 @@ func (q *Queue) DoWork() {
 
 				err := j.Run()
 				if err != nil {
-					// skip logging if there's no event name
-					// let the job handle the logging on its own
-					if j.event != "" {
+					var m kvs
 
-						var m kvs
-						if len(j.kvs) > 0 {
-							m = j.kvs
-						} else {
-							m = make(kvs)
-						}
+					if len(j.kvs) > 0 {
+						m = j.kvs
+					} else {
+						m = make(kvs)
+					}
 
-						// if this is the first error
-						// mark it as such for auditing
-						if count == 1 {
-							m[firstOccurrence] = "true"
-						}
+					// if this is the first error
+					// mark it as such for auditing
+					if count == 1 {
+						m[firstOccurrence] = "true"
+					}
 
-						if len(m) > 0 {
-							q.log.EventErrKv(j.event, err, m)
-						} else {
-							q.log.EventErr(j.event, err)
-						}
+					eventName := j.event
+					if eventName == "" {
+						eventName = "dbr.secondary.job.failure"
+					}
+
+					if len(m) > 0 {
+						q.log.EventErrKv(eventName, err, m)
+					} else {
+						q.log.EventErr(eventName, err)
 					}
 				} else {
-					// same here for success case
 					if j.event != "" {
 						if len(j.kvs) > 0 {
 							q.log.EventKv(j.event, j.kvs)
