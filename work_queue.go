@@ -49,19 +49,28 @@ func (q *Queue) AddJob(j *Job) error {
 	return nil
 }
 
+func (q *Queue) AddJobAndClose(j *Job) error {
+	if q.isClosed.Load() {
+		return errors.New("failed to add job, secondary queue has been closed")
+	}
+
+	q.m.Lock()
+	defer q.m.Unlock()
+
+	q.jobs <- j
+	q.isClosed.Swap(true)
+
+	close(q.jobs)
+	return nil
+}
+
 func (q *Queue) SetEventReceiver(log EventReceiver) {
 	q.m.Lock()
 	defer q.m.Unlock()
 	q.log = log
 }
 
-func (q *Queue) Close() error {
-	q.m.Lock()
-	defer q.m.Unlock()
-
-	q.isClosed.Swap(true)
-
-	close(q.jobs)
+func (q *Queue) Wait() error {
 	return q.eg.Wait()
 }
 
@@ -95,6 +104,8 @@ func (q *Queue) DoWork() {
 
 				err := j.Run()
 				if err != nil {
+					count++
+
 					var m kvs
 
 					if len(j.kvs) > 0 {
@@ -128,8 +139,6 @@ func (q *Queue) DoWork() {
 						}
 					}
 				}
-
-				count++
 			}
 		}
 	})

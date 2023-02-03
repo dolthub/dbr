@@ -55,20 +55,13 @@ type Connection struct {
 type ConnectionMpx struct {
 	PrimaryConn   *Connection
 	SecondaryConn *Connection
-	secondaryQ    *Queue
 }
 
 func NewConnectionMpxFromConnections(primaryConn *Connection, secondaryConn *Connection) *ConnectionMpx {
-	q := NewWorkingQueue(context.Background(), 500, secondaryConn.EventReceiver)
 	return &ConnectionMpx{
 		PrimaryConn:   primaryConn,
 		SecondaryConn: secondaryConn,
-		secondaryQ:    q,
 	}
-}
-
-func (connMpx *ConnectionMpx) AddJob(job *Job) error {
-	return connMpx.secondaryQ.AddJob(job)
 }
 
 func (connMpx *ConnectionMpx) Exec(query string, args ...interface{}) (sql.Result, error) {
@@ -77,29 +70,29 @@ func (connMpx *ConnectionMpx) Exec(query string, args ...interface{}) (sql.Resul
 		return nil, err
 	}
 
-	j := NewJob("dbr.secondary.exec", map[string]string{"sql": query}, func() error {
-		_, err := connMpx.SecondaryConn.Exec(query, args...)
-		return err
-	})
-	err = connMpx.AddJob(j)
+	// naked go routine to match parity of Connection.Exec
+	go func() {
+		_, cerr := connMpx.SecondaryConn.Exec(query, args...)
+		if cerr != nil {
+			connMpx.SecondaryConn.EventReceiver.EventErr("dbr.secondary.connection.exec", cerr)
+		}
+	}()
+
 	return primaryRes, err
 }
 
 func (connMpx *ConnectionMpx) Close() error {
 	err := connMpx.PrimaryConn.Close()
-	if err != nil {
-		return err
-	}
 
-	j := NewJob("dbr.secondary.close", nil, func() error {
-		return connMpx.SecondaryConn.Close()
-	})
-	err = connMpx.AddJob(j)
-	if err != nil {
-		return err
-	}
+	// naked go routine to match parity of Connection.Close
+	go func() {
+		cerr := connMpx.SecondaryConn.Close()
+		if cerr != nil {
+			connMpx.SecondaryConn.EventReceiver.EventErr("dbr.secondary.connection.close", cerr)
+		}
+	}()
 
-	return connMpx.secondaryQ.Close()
+	return err
 }
 
 // Session represents a business unit of execution.
@@ -123,6 +116,7 @@ type SessionMpx struct {
 	PrimaryEventReceiver   EventReceiver
 	SecondaryEventReceiver EventReceiver
 	Timeout                time.Duration
+	secondaryQ             *Queue
 }
 
 func (sessMpx *SessionMpx) PrimaryExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
@@ -143,6 +137,26 @@ func (sessMpx *SessionMpx) SecondaryQueryContext(ctx context.Context, query stri
 
 func (sessMpx *SessionMpx) AddJob(job *Job) error {
 	return sessMpx.secondaryQ.AddJob(job)
+}
+
+func (sessMpx *SessionMpx) Close() error {
+	j := NewJob("dbr.secondary.connection.close", nil, func() error {
+		return sessMpx.SecondaryConn.Close()
+	})
+
+	err := sessMpx.secondaryQ.AddJobAndClose(j)
+	if err != nil {
+		return err
+	}
+
+	go func() {
+		werr := sessMpx.secondaryQ.Wait()
+		if werr != nil {
+			sessMpx.SecondaryEventReceiver.EventErr("dbr.secondary.queue.wait", werr)
+		}
+	}()
+
+	return sessMpx.PrimaryConn.Close()
 }
 
 func (sessMpx *SessionMpx) SetSecondaryEventReceiver(log EventReceiver) {
@@ -192,7 +206,7 @@ func (conn *Connection) NewSession(log EventReceiver) *Session {
 
 // NewSessionMpx instantiates a SessionMpx from ConnectionMpx.
 // If log is nil, ConnectionMpx's EventReceivers are used.
-func (connMpx *ConnectionMpx) NewSessionMpx(ctx context.Context, primaryLog, secondaryLog EventReceiver) *SessionMpx {
+func (connMpx *ConnectionMpx) NewSessionMpx(primaryLog, secondaryLog EventReceiver) *SessionMpx {
 	if primaryLog == nil {
 		primaryLog = connMpx.PrimaryConn.EventReceiver // Use parent instrumentation
 	}
@@ -200,12 +214,12 @@ func (connMpx *ConnectionMpx) NewSessionMpx(ctx context.Context, primaryLog, sec
 		secondaryLog = connMpx.SecondaryConn.EventReceiver
 	}
 
-	connMpx.secondaryQ.SetEventReceiver(secondaryLog)
-
+	q := NewWorkingQueue(context.Background(), 500, secondaryLog)
 	return &SessionMpx{
 		ConnectionMpx:          connMpx,
 		PrimaryEventReceiver:   primaryLog,
 		SecondaryEventReceiver: secondaryLog,
+		secondaryQ:             q,
 	}
 }
 
