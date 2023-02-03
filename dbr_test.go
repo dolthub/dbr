@@ -45,7 +45,7 @@ func createSessionMpx(ctx context.Context, primaryDriver, primaryDsn, secondaryD
 	}
 
 	connMpx := NewConnectionMpxFromConnections(primaryConn, secondaryConn)
-	return connMpx.NewSessionMpx(ctx, nil, nil)
+	return connMpx.NewSessionMpx(nil, nil)
 }
 
 var (
@@ -316,7 +316,7 @@ func TestBasicCRUDMpx(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 0, len(ids))
 
-	// close the queue so it finishes processing all work
+	// wait for work to finish processing
 	require.NoError(t, sessMpx.Close())
 
 	secondaryLogTracer.RequireEqual(t)
@@ -384,6 +384,8 @@ func TestTimeoutMpx(t *testing.T) {
 	// secondary statements won't run
 	expectedEvents := []evt{
 		secondaryBeginEvt, // begin
+		rollbackEvt,
+		secondaryRollbackEvt,
 		secondaryCloseEvt, // from sessMpx.Close()
 	}
 
@@ -417,7 +419,6 @@ func TestTimeoutMpx(t *testing.T) {
 
 	txMpx, err := sessMpx.Begin()
 	require.NoError(t, err)
-	defer txMpx.RollbackUnlessCommitted()
 
 	txMpx.PrimaryTx.Timeout = time.Nanosecond
 	txMpx.SecondaryTx.Timeout = time.Nanosecond
@@ -434,7 +435,13 @@ func TestTimeoutMpx(t *testing.T) {
 	_, err = txMpx.DeleteFrom("dbr_people").Exec()
 	require.Equal(t, context.DeadlineExceeded, err)
 
-	// close the queue so it finishes processing all work
+	// must call in order to wait on tx queue
+	txMpx.RollbackUnlessCommitted()
+
+	// wait for tx queue work to finish processing
+	require.NoError(t, txMpx.Wait())
+
+	// wait for session queue to finish processing
 	require.NoError(t, sessMpx.Close())
 
 	secondaryLogTracer.RequireEqual(t)

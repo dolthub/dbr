@@ -20,6 +20,10 @@ func (txMpx *TxMpx) AddJob(job *Job) error {
 	return txMpx.SecondaryQ.AddJob(job)
 }
 
+func (txMpx *TxMpx) Wait() error {
+	return txMpx.SecondaryQ.Wait()
+}
+
 func (txMpx *TxMpx) PrimaryExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
 	return txMpx.PrimaryTx.ExecContext(ctx, query, args...)
 }
@@ -71,6 +75,8 @@ func (smpx *SessionMpx) BeginTxs(ctx context.Context, opts *sql.TxOptions) (*TxM
 		return nil
 	})
 
+	// add job to the tx queue to ensure
+	// all tx jobs have access to the sql.Tx
 	err = q.AddJob(j)
 	if err != nil {
 		return nil, err

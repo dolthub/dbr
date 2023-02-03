@@ -135,12 +135,19 @@ func (sessMpx *SessionMpx) SecondaryQueryContext(ctx context.Context, query stri
 	return sessMpx.SecondaryConn.QueryContext(ctx, query, args...)
 }
 
+// AddJob adds a job to the secondary queue.
 func (sessMpx *SessionMpx) AddJob(job *Job) error {
 	return sessMpx.secondaryQ.AddJob(job)
 }
 
+// Wait waits for the secondary queue to finish all work.
+func (sessMpx *SessionMpx) Wait() error {
+	return sessMpx.secondaryQ.Wait()
+}
+
+// Close closes the primary and secondary connections and waits for the secondary queue to finish all work.
 func (sessMpx *SessionMpx) Close() error {
-	j := NewJob("dbr.secondary.connection.close", nil, func() error {
+	j := NewJob("dbr.secondary.close", nil, func() error {
 		return sessMpx.SecondaryConn.Close()
 	})
 
@@ -149,14 +156,12 @@ func (sessMpx *SessionMpx) Close() error {
 		return err
 	}
 
-	go func() {
-		werr := sessMpx.secondaryQ.Wait()
-		if werr != nil {
-			sessMpx.SecondaryEventReceiver.EventErr("dbr.secondary.queue.wait", werr)
-		}
-	}()
+	err = sessMpx.PrimaryConn.Close()
+	if err != nil {
+		return err
+	}
 
-	return sessMpx.PrimaryConn.Close()
+	return sessMpx.secondaryQ.Wait()
 }
 
 func (sessMpx *SessionMpx) SetSecondaryEventReceiver(log EventReceiver) {

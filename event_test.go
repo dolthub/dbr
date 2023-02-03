@@ -7,14 +7,13 @@ import (
 )
 
 var (
-	secondaryBeginEvt     = evt{eventName: "dbr.secondary.begin"}
-	secondaryExecEvt      = evt{eventName: "dbr.secondary.exec"}
-	commitEvt             = evt{eventName: "dbr.commit"}
-	rollbackEvt           = evt{eventName: "dbr.rollback"}
-	secondaryCommitEvt    = evt{eventName: "dbr.secondary.commit"}
-	secondaryCloseEvt     = evt{eventName: "dbr.secondary.close"}
-	secondaryRollbackEvt  = evt{eventName: "dbr.secondary.rollback"}
-	secondaryQueryContext = evt{eventName: "dbr.secondary.query_context"}
+	secondaryBeginEvt    = evt{eventName: "dbr.secondary.begin"}
+	secondaryExecEvt     = evt{eventName: "dbr.secondary.exec"}
+	commitEvt            = evt{eventName: "dbr.commit"}
+	rollbackEvt          = evt{eventName: "dbr.rollback"}
+	secondaryCommitEvt   = evt{eventName: "dbr.secondary.commit"}
+	secondaryCloseEvt    = evt{eventName: "dbr.secondary.close"}
+	secondaryRollbackEvt = evt{eventName: "dbr.secondary.rollback"}
 )
 
 type testTraceReceiver struct {

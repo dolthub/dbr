@@ -19,7 +19,6 @@ func TestTransactionCommitMpx(t *testing.T) {
 		secondaryExecEvt,   // insert
 		commitEvt,          // from Tx.Commit()
 		secondaryCommitEvt, // commit
-		secondaryCloseEvt,  // close
 	}
 
 	secondaryLogTracer := newRequireTraceReceiver()
@@ -69,8 +68,8 @@ func TestTransactionCommitMpx(t *testing.T) {
 	require.Error(t, err)
 	require.Equal(t, 1, sessMpx.PrimaryEventReceiver.(*testTraceReceiver).errored)
 
-	// close the queue so it finishes processing all work
-	require.NoError(t, sessMpx.Close())
+	// wait for work to finish processing
+	require.NoError(t, txMpx.Wait())
 
 	secondaryLogTracer.RequireEqual(t)
 }
@@ -87,7 +86,6 @@ func TestTransactionMpxRollback(t *testing.T) {
 		secondaryExecEvt,     // insert
 		rollbackEvt,          // from Tx.Rollback()
 		secondaryRollbackEvt, // rollback
-		secondaryCloseEvt,    // close
 	}
 
 	secondaryLogTracer := newRequireTraceReceiver()
@@ -123,8 +121,8 @@ func TestTransactionMpxRollback(t *testing.T) {
 	err = txMpx.Select("*").From("dbr_people").Where(Eq("id", id)).LoadOne(&person)
 	require.Error(t, err)
 
-	// close the queue so it finishes processing all work
-	require.NoError(t, sessMpx.Close())
+	// wait for work to finish processing
+	require.NoError(t, txMpx.Wait())
 
 	secondaryLogTracer.RequireEqual(t)
 }
