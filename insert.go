@@ -93,7 +93,7 @@ func (b *InsertStmt) Build(d Dialect, buf Buffer) error {
 		buf.WriteValue(tuple...)
 	}
 
-	if d != dialect.MSSQL && len(b.ReturnColumn) > 0 {
+	if d != dialect.MSSQL && d != dialect.MySQL && len(b.ReturnColumn) > 0 {
 		buf.WriteString(" RETURNING ")
 		for i, col := range b.ReturnColumn {
 			if i > 0 {
