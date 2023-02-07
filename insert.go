@@ -24,6 +24,9 @@ type InsertStmt struct {
 	ReturnColumn []string
 	RecordID     *int64
 	comments     Comments
+
+	exec  func(ctx context.Context, builder Builder) (sql.Result, string, error)
+	query func(ctx context.Context, builder Builder, dest interface{}) (string, error)
 }
 
 type InsertBuilder = InsertStmt
@@ -90,7 +93,7 @@ func (b *InsertStmt) Build(d Dialect, buf Buffer) error {
 		buf.WriteValue(tuple...)
 	}
 
-	if d != dialect.MSSQL && len(b.ReturnColumn) > 0 {
+	if d != dialect.MSSQL && d != dialect.MySQL && len(b.ReturnColumn) > 0 {
 		buf.WriteString(" RETURNING ")
 		for i, col := range b.ReturnColumn {
 			if i > 0 {
@@ -116,6 +119,31 @@ func (sess *Session) InsertInto(table string) *InsertStmt {
 	b.runner = sess
 	b.EventReceiver = sess.EventReceiver
 	b.Dialect = sess.Dialect
+	b.exec = func(ctx context.Context, builder Builder) (sql.Result, string, error) {
+		return exec(ctx, sess, sess.EventReceiver, b, sess.Dialect)
+	}
+	b.query = func(ctx context.Context, builder Builder, dest interface{}) (string, error) {
+		_, qStr, err := query(ctx, sess, sess.EventReceiver, b, sess.Dialect, dest)
+		return qStr, err
+	}
+	return b
+}
+
+// InsertInto creates an InsertStmt.
+func (smpx *SessionMpx) InsertInto(table string) *InsertStmt {
+	b := InsertInto(table)
+	b.runner = smpx
+
+	b.EventReceiver = smpx.PrimaryEventReceiver
+	b.Dialect = smpx.PrimaryConn.Dialect
+
+	b.exec = func(ctx context.Context, builder Builder) (sql.Result, string, error) {
+		return execMpx(ctx, smpx, smpx.PrimaryEventReceiver, smpx.SecondaryEventReceiver, b, smpx.PrimaryConn.Dialect, smpx.SecondaryConn.Dialect)
+	}
+	b.query = func(ctx context.Context, builder Builder, dest interface{}) (string, error) {
+		_, qStr, err := queryMpx(ctx, smpx, smpx.PrimaryEventReceiver, smpx.SecondaryEventReceiver, b, smpx.PrimaryConn.Dialect, smpx.SecondaryConn.Dialect, dest)
+		return qStr, err
+	}
 	return b
 }
 
@@ -125,6 +153,31 @@ func (tx *Tx) InsertInto(table string) *InsertStmt {
 	b.runner = tx
 	b.EventReceiver = tx.EventReceiver
 	b.Dialect = tx.Dialect
+	b.exec = func(ctx context.Context, builder Builder) (sql.Result, string, error) {
+		return exec(ctx, tx, tx.EventReceiver, b, tx.Dialect)
+	}
+	b.query = func(ctx context.Context, builder Builder, dest interface{}) (string, error) {
+		_, qStr, err := query(ctx, tx, tx.EventReceiver, b, tx.Dialect, dest)
+		return qStr, err
+	}
+	return b
+}
+
+// InsertInto creates an InsertStmt.
+func (txMpx *TxMpx) InsertInto(table string) *InsertStmt {
+	b := InsertInto(table)
+	b.runner = txMpx
+
+	b.EventReceiver = txMpx.PrimaryTx.EventReceiver
+	b.Dialect = txMpx.PrimaryTx.Dialect
+
+	b.exec = func(ctx context.Context, builder Builder) (sql.Result, string, error) {
+		return execMpx(ctx, txMpx, txMpx.PrimaryTx.EventReceiver, txMpx.SecondaryTx.EventReceiver, b, txMpx.PrimaryTx.Dialect, txMpx.SecondaryTx.Dialect)
+	}
+	b.query = func(ctx context.Context, builder Builder, dest interface{}) (string, error) {
+		_, qStr, err := queryMpx(ctx, txMpx, txMpx.PrimaryTx.EventReceiver, txMpx.SecondaryTx.EventReceiver, b, txMpx.PrimaryTx.Dialect, txMpx.SecondaryTx.Dialect, dest)
+		return qStr, err
+	}
 	return b
 }
 
@@ -139,20 +192,70 @@ func InsertBySql(query string, value ...interface{}) *InsertStmt {
 }
 
 // InsertBySql creates an InsertStmt from raw query.
-func (sess *Session) InsertBySql(query string, value ...interface{}) *InsertStmt {
-	b := InsertBySql(query, value...)
+func (sess *Session) InsertBySql(queryStr string, value ...interface{}) *InsertStmt {
+	b := InsertBySql(queryStr, value...)
 	b.runner = sess
 	b.EventReceiver = sess.EventReceiver
 	b.Dialect = sess.Dialect
+	b.exec = func(ctx context.Context, builder Builder) (sql.Result, string, error) {
+		return exec(ctx, sess, sess.EventReceiver, b, sess.Dialect)
+	}
+	b.query = func(ctx context.Context, builder Builder, dest interface{}) (string, error) {
+		_, qStr, err := query(ctx, sess, sess.EventReceiver, b, sess.Dialect, dest)
+		return qStr, err
+	}
 	return b
 }
 
 // InsertBySql creates an InsertStmt from raw query.
-func (tx *Tx) InsertBySql(query string, value ...interface{}) *InsertStmt {
+func (smpx *SessionMpx) InsertBySql(query string, value ...interface{}) *InsertStmt {
 	b := InsertBySql(query, value...)
+	b.runner = smpx
+
+	b.EventReceiver = smpx.PrimaryEventReceiver
+	b.Dialect = smpx.PrimaryConn.Dialect
+
+	b.exec = func(ctx context.Context, builder Builder) (sql.Result, string, error) {
+		return execMpx(ctx, smpx, smpx.PrimaryEventReceiver, smpx.SecondaryEventReceiver, b, smpx.PrimaryConn.Dialect, smpx.SecondaryConn.Dialect)
+	}
+	b.query = func(ctx context.Context, builder Builder, dest interface{}) (string, error) {
+		_, qStr, err := queryMpx(ctx, smpx, smpx.PrimaryEventReceiver, smpx.SecondaryEventReceiver, b, smpx.PrimaryConn.Dialect, smpx.SecondaryConn.Dialect, dest)
+		return qStr, err
+	}
+	return b
+}
+
+// InsertBySql creates an InsertStmt from raw query.
+func (tx *Tx) InsertBySql(queryStr string, value ...interface{}) *InsertStmt {
+	b := InsertBySql(queryStr, value...)
 	b.runner = tx
 	b.EventReceiver = tx.EventReceiver
 	b.Dialect = tx.Dialect
+	b.exec = func(ctx context.Context, builder Builder) (sql.Result, string, error) {
+		return exec(ctx, tx, tx.EventReceiver, b, tx.Dialect)
+	}
+	b.query = func(ctx context.Context, builder Builder, dest interface{}) (string, error) {
+		_, qStr, err := query(ctx, tx, tx.EventReceiver, b, tx.Dialect, dest)
+		return qStr, err
+	}
+	return b
+}
+
+// InsertBySql creates an InsertStmt from raw query.
+func (txMpx *TxMpx) InsertBySql(query string, value ...interface{}) *InsertStmt {
+	b := InsertBySql(query, value...)
+	b.runner = txMpx
+
+	b.EventReceiver = txMpx.PrimaryTx.EventReceiver
+	b.Dialect = txMpx.PrimaryTx.Dialect
+
+	b.exec = func(ctx context.Context, builder Builder) (sql.Result, string, error) {
+		return execMpx(ctx, txMpx, txMpx.PrimaryTx.EventReceiver, txMpx.SecondaryTx.EventReceiver, b, txMpx.PrimaryTx.Dialect, txMpx.SecondaryTx.Dialect)
+	}
+	b.query = func(ctx context.Context, builder Builder, dest interface{}) (string, error) {
+		_, qStr, err := queryMpx(ctx, txMpx, txMpx.PrimaryTx.EventReceiver, txMpx.SecondaryTx.EventReceiver, b, txMpx.PrimaryTx.Dialect, txMpx.SecondaryTx.Dialect, dest)
+		return qStr, err
+	}
 	return b
 }
 
@@ -244,7 +347,7 @@ func (b *InsertStmt) ExecContext(ctx context.Context) (sql.Result, error) {
 }
 
 func (b *InsertStmt) ExecContextDebug(ctx context.Context) (sql.Result, string, error) {
-	result, queryStr, err := exec(ctx, b.runner, b.EventReceiver, b, b.Dialect)
+	result, queryStr, err := b.exec(ctx, b)
 	if err != nil {
 		return nil, queryStr, err
 	}
@@ -260,13 +363,12 @@ func (b *InsertStmt) ExecContextDebug(ctx context.Context) (sql.Result, string, 
 }
 
 func (b *InsertStmt) LoadContext(ctx context.Context, value interface{}) error {
-	_, _, err := query(ctx, b.runner, b.EventReceiver, b, b.Dialect, value)
+	_, err := b.query(ctx, b, value)
 	return err
 }
 
 func (b *InsertStmt) LoadContextDebug(ctx context.Context, value interface{}) (string, error) {
-	_, queryStr, err := query(ctx, b.runner, b.EventReceiver, b, b.Dialect, value)
-	return queryStr, err
+	return b.query(ctx, b, value)
 }
 
 func (b *InsertStmt) Load(value interface{}) error {

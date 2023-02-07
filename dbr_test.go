@@ -34,6 +34,20 @@ func createSession(driver, dsn string) *Session {
 	return conn.NewSession(nil)
 }
 
+func createSessionMpx(ctx context.Context, primaryDriver, primaryDsn, secondaryDriver, secondaryDsn string) *SessionMpx {
+	primaryConn, err := Open(primaryDriver, primaryDsn, &testTraceReceiver{})
+	if err != nil {
+		panic(err)
+	}
+	secondaryConn, err := Open(secondaryDriver, secondaryDsn, &testTraceReceiver{})
+	if err != nil {
+		panic(err)
+	}
+
+	connMpx := NewConnectionMpxFromConnections(primaryConn, secondaryConn)
+	return connMpx.NewSessionMpx(nil, nil)
+}
+
 var (
 	mysqlSession          = createSession("mysql", mysqlDSN)
 	postgresSession       = createSession("postgres", postgresDSN)
@@ -96,6 +110,52 @@ func reset(t *testing.T, sess *Session) {
 	}
 	// clear test data collected by testTraceReceiver
 	sess.EventReceiver = &testTraceReceiver{}
+}
+
+func resetConn(t *testing.T, conn *Connection) EventReceiver {
+	autoIncrementType := "serial PRIMARY KEY"
+	boolType := "bool"
+	datetimeType := "timestamp"
+
+	switch conn.Dialect {
+	case dialect.SQLite3:
+		autoIncrementType = "integer PRIMARY KEY"
+	case dialect.MSSQL:
+		autoIncrementType = "integer IDENTITY PRIMARY KEY"
+		boolType = "BIT"
+		datetimeType = "datetime"
+	}
+	for _, v := range []string{
+		`DROP TABLE IF EXISTS dbr_people`,
+		fmt.Sprintf(`CREATE TABLE dbr_people (
+			id %s,
+			name varchar(255) NOT NULL,
+			email varchar(255)
+		)`, autoIncrementType),
+
+		`DROP TABLE IF EXISTS null_types`,
+		fmt.Sprintf(`CREATE TABLE null_types (
+			id %s,
+			string_val varchar(255) NULL,
+			int64_val integer NULL,
+			float64_val float NULL,
+			time_val %s NULL,
+			bool_val %s NULL
+		)`, autoIncrementType, datetimeType, boolType),
+	} {
+		_, err := conn.Exec(v)
+		require.NoError(t, err)
+	}
+	return &testTraceReceiver{}
+}
+
+func resetMpx(t *testing.T, sessMpx *SessionMpx) {
+	primaryER := resetConn(t, sessMpx.PrimaryConn)
+	secondaryER := resetConn(t, sessMpx.SecondaryConn)
+
+	// clear test data collected by testTraceReceiver
+	sessMpx.PrimaryEventReceiver = primaryER
+	sessMpx.SecondaryEventReceiver = secondaryER
 }
 
 func TestBasicCRUD(t *testing.T) {
@@ -170,6 +230,98 @@ func TestBasicCRUD(t *testing.T) {
 	}
 }
 
+func TestBasicCRUDMpx(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sessMpx := createSessionMpx(ctx, "postgres", postgresDSN, "mysql", mysqlDSN)
+	resetMpx(t, sessMpx)
+
+	expectedEvents := []evt{
+		secondaryExecEvt,  // insert
+		secondaryExecEvt,  // update
+		secondaryExecEvt,  // delete
+		secondaryCloseEvt, // from sessMpx.Close()
+	}
+
+	secondaryLogTracer := newRequireTraceReceiver()
+
+	sessMpx.SetSecondaryEventReceiver(secondaryLogTracer)
+	secondaryLogTracer.SetExpected(expectedEvents)
+
+	jonathan := dbrPerson{
+		Name:  "jonathan",
+		Email: "jonathan@uservoice.com",
+	}
+	insertColumns := []string{"name", "email"}
+	if sessMpx.PrimaryConn.Dialect == dialect.PostgreSQL || sessMpx.SecondaryConn.Dialect == dialect.PostgreSQL {
+		jonathan.Id = 1
+		insertColumns = []string{"id", "name", "email"}
+	}
+	if sessMpx.PrimaryConn.Dialect == dialect.MSSQL || sessMpx.SecondaryConn.Dialect == dialect.MSSQL {
+		jonathan.Id = 1
+	}
+
+	// insert
+	result, err := sessMpx.InsertInto("dbr_people").Columns(insertColumns...).Record(&jonathan).Exec()
+	require.NoError(t, err)
+
+	primaryRowsAffected, err := result.RowsAffected()
+	require.NoError(t, err)
+	require.Equal(t, int64(1), primaryRowsAffected)
+
+	require.True(t, jonathan.Id > 0)
+
+	// select
+	var people []dbrPerson
+	count, err := sessMpx.Select("*").From("dbr_people").Where(Eq("id", jonathan.Id)).Load(&people)
+	require.NoError(t, err)
+	require.Equal(t, 1, count)
+	require.Equal(t, jonathan.Id, people[0].Id)
+	require.Equal(t, jonathan.Name, people[0].Name)
+	require.Equal(t, jonathan.Email, people[0].Email)
+
+	// select id
+	ids, err := sessMpx.Select("id").From("dbr_people").ReturnInt64s()
+	require.NoError(t, err)
+	require.Equal(t, 1, len(ids))
+
+	// select id limit
+	ids, err = sessMpx.Select("id").From("dbr_people").Limit(1).ReturnInt64s()
+	require.NoError(t, err)
+	require.Equal(t, 1, len(ids))
+
+	// update
+	result, err = sessMpx.Update("dbr_people").Where(Eq("id", jonathan.Id)).Set("name", "jonathan1").Exec()
+	require.NoError(t, err)
+
+	primaryRowsAffected, err = result.RowsAffected()
+	require.NoError(t, err)
+	require.Equal(t, int64(1), primaryRowsAffected)
+
+	var n NullInt64
+	sessMpx.Select("count(*)").From("dbr_people").Where("name = ?", "jonathan1").LoadOne(&n)
+	require.Equal(t, int64(1), n.Int64)
+
+	// delete
+	result, err = sessMpx.DeleteFrom("dbr_people").Where(Eq("id", jonathan.Id)).Exec()
+	require.NoError(t, err)
+
+	primaryRowsAffected, err = result.RowsAffected()
+	require.NoError(t, err)
+	require.Equal(t, int64(1), primaryRowsAffected)
+
+	// select id
+	ids, err = sessMpx.Select("id").From("dbr_people").ReturnInt64s()
+	require.NoError(t, err)
+	require.Equal(t, 0, len(ids))
+
+	// wait for work to finish processing
+	require.NoError(t, sessMpx.Close())
+
+	secondaryLogTracer.RequireEqual(t)
+}
+
 func TestTimeout(t *testing.T) {
 	mysqlSession := createSession("mysql", mysqlDSN)
 	postgresSession := createSession("postgres", postgresDSN)
@@ -219,4 +371,78 @@ func TestTimeout(t *testing.T) {
 		_, err = tx.DeleteFrom("dbr_people").Exec()
 		require.Equal(t, context.DeadlineExceeded, err)
 	}
+}
+
+func TestTimeoutMpx(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sessMpx := createSessionMpx(ctx, "postgres", postgresDSN, "mysql", mysqlDSN)
+	resetMpx(t, sessMpx)
+
+	// if the primary deadline passes
+	// secondary statements won't run
+	expectedEvents := []evt{
+		secondaryBeginEvt, // begin
+		rollbackEvt,
+		secondaryRollbackEvt,
+		secondaryCloseEvt, // from sessMpx.Close()
+	}
+
+	secondaryLogTracer := newRequireTraceReceiver()
+
+	sessMpx.SetSecondaryEventReceiver(secondaryLogTracer)
+	secondaryLogTracer.SetExpected(expectedEvents)
+
+	// session op timeout
+	sessMpx.Timeout = time.Nanosecond
+
+	var people []dbrPerson
+	_, err := sessMpx.Select("*").From("dbr_people").Load(&people)
+	require.Equal(t, context.DeadlineExceeded, err)
+	require.Equal(t, 1, sessMpx.PrimaryEventReceiver.(*testTraceReceiver).errored)
+
+	_, err = sessMpx.InsertInto("dbr_people").Columns("name", "email").Values("test", "test@test.com").Exec()
+	require.Equal(t, context.DeadlineExceeded, err)
+	require.Equal(t, 2, sessMpx.PrimaryEventReceiver.(*testTraceReceiver).errored)
+
+	_, err = sessMpx.Update("dbr_people").Set("name", "test1").Exec()
+	require.Equal(t, context.DeadlineExceeded, err)
+	require.Equal(t, 3, sessMpx.PrimaryEventReceiver.(*testTraceReceiver).errored)
+
+	_, err = sessMpx.DeleteFrom("dbr_people").Exec()
+	require.Equal(t, context.DeadlineExceeded, err)
+	require.Equal(t, 4, sessMpx.PrimaryEventReceiver.(*testTraceReceiver).errored)
+
+	// tx op timeout
+	sessMpx.Timeout = 0
+
+	txMpx, err := sessMpx.Begin()
+	require.NoError(t, err)
+
+	txMpx.PrimaryTx.Timeout = time.Nanosecond
+	txMpx.SecondaryTx.Timeout = time.Nanosecond
+
+	_, err = txMpx.Select("*").From("dbr_people").Load(&people)
+	require.Equal(t, context.DeadlineExceeded, err)
+
+	_, err = txMpx.InsertInto("dbr_people").Columns("name", "email").Values("test", "test@test.com").Exec()
+	require.Equal(t, context.DeadlineExceeded, err)
+
+	_, err = txMpx.Update("dbr_people").Set("name", "test1").Exec()
+	require.Equal(t, context.DeadlineExceeded, err)
+
+	_, err = txMpx.DeleteFrom("dbr_people").Exec()
+	require.Equal(t, context.DeadlineExceeded, err)
+
+	// must call in order to wait on tx queue
+	txMpx.RollbackUnlessCommitted()
+
+	// wait for tx queue work to finish processing
+	require.NoError(t, txMpx.Wait())
+
+	// wait for session queue to finish processing
+	require.NoError(t, sessMpx.Close())
+
+	secondaryLogTracer.RequireEqual(t)
 }
