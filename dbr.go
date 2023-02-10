@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/gocraft/dbr/v2/dialect"
@@ -431,21 +432,21 @@ func execMpx(
 			if rerr != nil {
 				return secondaryLog.EventErr("dbr.secondary.primary.assertion.error", rerr)
 			}
+
 			secondaryRowsAffected, rerr := secondaryResults.RowsAffected()
 			if rerr != nil {
 				return secondaryLog.EventErr("dbr.secondary.primary.assertion.error", rerr)
 			}
 
 			if secondaryRowsAffected != primaryRowsAffected {
-				// dont return here, just log that they arent equal
+				// don't return here, just log that they aren't equal
 				secondaryLog.EventErrKv("dbr.secondary.primary.assertion.error", errors.New("rows affected not equal"), kvs{
-					"primarySql":    primaryQuery,
-					"primaryArgs":   fmt.Sprint(primaryValue),
-					"secondarySql":  secondaryQuery,
-					"secondaryArgs": fmt.Sprint(secondaryValue),
+					"primarySql":            primaryQuery,
+					"primaryRowsAffected":   strconv.FormatInt(primaryRowsAffected, 10),
+					"secondarySql":          secondaryQuery,
+					"secondaryRowsAffected": strconv.FormatInt(secondaryRowsAffected, 10),
 				})
 			}
-
 			return nil
 		},
 	}
@@ -604,7 +605,6 @@ func queryRowsMpx(ctx context.Context, runnerMpx RunnerMpx, primaryLog, secondar
 					"sql": secondaryQuery,
 				})
 			}
-
 			return nil
 		},
 	}

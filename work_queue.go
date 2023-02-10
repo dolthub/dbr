@@ -53,7 +53,7 @@ func (q *Queue) AddJob(j *Job) error {
 
 func (q *Queue) AddJobAndClose(j *Job) error {
 	if q.isClosed.Load() {
-		return errors.New("failed to add job, secondary queue has been closed")
+		return errFailedToAddJob
 	}
 
 	q.m.Lock()
