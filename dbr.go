@@ -184,7 +184,7 @@ func (sessMpx *SessionMpx) ExecContext(ctx context.Context, query string, args .
 	}
 
 	j := NewJob("dbr.secondary.exec_context", map[string]string{"sql": query}, func() error {
-		_, err := sessMpx.SecondaryExecContext(ctx, query, args...)
+		_, err := sessMpx.SecondaryExecContext(context.Background(), query, args...)
 		return err
 	})
 	err = sessMpx.AddJob(j)
@@ -326,15 +326,15 @@ func execMpx(
 
 	timeout := runnerMpx.GetTimeout()
 
-	baseCtx := ctx
+	basePrimaryCtx := ctx
 
 	var primaryCtx context.Context
 	if timeout > 0 {
 		var cancel func()
-		primaryCtx, cancel = context.WithTimeout(baseCtx, timeout)
+		primaryCtx, cancel = context.WithTimeout(basePrimaryCtx, timeout)
 		defer cancel()
 	} else {
-		primaryCtx = baseCtx
+		primaryCtx = basePrimaryCtx
 	}
 
 	primaryI := interpolator{
@@ -368,22 +368,24 @@ func execMpx(
 	primaryResults, err := runnerMpx.PrimaryExecContext(primaryCtx, primaryQuery, primaryValue...)
 	if err != nil {
 		if primaryHasTracingImpl {
-			primaryTraceImpl.SpanError(ctx, err)
+			primaryTraceImpl.SpanError(primaryCtx, err)
 		}
 		return primaryResults, primaryQuery, primaryLog.EventErrKv("dbr.primary.exec.exec", err, kvs{
 			"sql": primaryQuery,
 		})
 	}
 
+	baseSecondaryCtx := context.Background()
+
 	j := &Job{
 		exec: func() error {
 			var secondaryCtx context.Context
 			if timeout > 0 {
 				var cancel func()
-				secondaryCtx, cancel = context.WithTimeout(baseCtx, timeout)
+				secondaryCtx, cancel = context.WithTimeout(baseSecondaryCtx, timeout)
 				defer cancel()
 			} else {
-				secondaryCtx = baseCtx
+				secondaryCtx = baseSecondaryCtx
 			}
 
 			secondaryI := interpolator{
@@ -417,7 +419,7 @@ func execMpx(
 			secondaryResults, rerr := runnerMpx.SecondaryExecContext(secondaryCtx, secondaryQuery, secondaryValue...)
 			if rerr != nil {
 				if secondaryHasTracingImpl {
-					secondaryTraceImpl.SpanError(ctx, rerr)
+					secondaryTraceImpl.SpanError(secondaryCtx, rerr)
 				}
 				return secondaryLog.EventErrKv("dbr.secondary.exec.exec", rerr, kvs{
 					"sql": secondaryQuery,
@@ -435,7 +437,8 @@ func execMpx(
 			}
 
 			if secondaryRowsAffected != primaryRowsAffected {
-				return secondaryLog.EventErrKv("dbr.secondary.primary.assertion.error", errors.New("rows affected not equal"), kvs{
+				// dont return here, just log that they arent equal
+				secondaryLog.EventErrKv("dbr.secondary.primary.assertion.error", errors.New("rows affected not equal"), kvs{
 					"primarySql":    primaryQuery,
 					"primaryArgs":   fmt.Sprint(primaryValue),
 					"secondarySql":  secondaryQuery,
@@ -520,6 +523,8 @@ func query(ctx context.Context, runner runner, log EventReceiver, builder Builde
 }
 
 func queryRowsMpx(ctx context.Context, runnerMpx RunnerMpx, primaryLog, secondaryLog EventReceiver, builder Builder, primaryD, secondaryD Dialect) (string, *sql.Rows, error) {
+	primaryCtx := ctx
+
 	// discard the timeout set in the runner, the context should not be canceled
 	// implicitly here but explicitly by the caller since the returned *sql.Rows
 	// may still listening to the context
@@ -546,20 +551,21 @@ func queryRowsMpx(ctx context.Context, runnerMpx RunnerMpx, primaryLog, secondar
 
 	primaryTraceImpl, primaryHasTracingImpl := primaryLog.(TracingEventReceiver)
 	if primaryHasTracingImpl {
-		ctx = primaryTraceImpl.SpanStart(ctx, "dbr.primary.select", primaryQuery)
-		defer primaryTraceImpl.SpanFinish(ctx)
+		primaryCtx = primaryTraceImpl.SpanStart(primaryCtx, "dbr.primary.select", primaryQuery)
+		defer primaryTraceImpl.SpanFinish(primaryCtx)
 	}
 
-	primaryRows, err := runnerMpx.PrimaryQueryContext(ctx, primaryQuery, primaryValue...)
+	primaryRows, err := runnerMpx.PrimaryQueryContext(primaryCtx, primaryQuery, primaryValue...)
 	if err != nil {
 		if primaryHasTracingImpl {
-			primaryTraceImpl.SpanError(ctx, err)
+			primaryTraceImpl.SpanError(primaryCtx, err)
 		}
 		return primaryQuery, nil, primaryLog.EventErrKv("dbr.primary.select.load.query", err, kvs{
 			"sql": primaryQuery,
 		})
 	}
 
+	secondaryCtx := context.Background()
 	j := &Job{
 		exec: func() error {
 			secondaryI := interpolator{
@@ -585,14 +591,14 @@ func queryRowsMpx(ctx context.Context, runnerMpx RunnerMpx, primaryLog, secondar
 
 			secondaryTraceImpl, secondaryHasTracingImpl := secondaryLog.(TracingEventReceiver)
 			if secondaryHasTracingImpl {
-				ctx = secondaryTraceImpl.SpanStart(ctx, "dbr.secondary.select", secondaryQuery)
-				defer secondaryTraceImpl.SpanFinish(ctx)
+				secondaryCtx = secondaryTraceImpl.SpanStart(secondaryCtx, "dbr.secondary.select", secondaryQuery)
+				defer secondaryTraceImpl.SpanFinish(secondaryCtx)
 			}
 
-			_, rerr = runnerMpx.SecondaryQueryContext(ctx, secondaryQuery, secondaryValue...)
+			_, rerr = runnerMpx.SecondaryQueryContext(secondaryCtx, secondaryQuery, secondaryValue...)
 			if rerr != nil {
 				if secondaryHasTracingImpl {
-					secondaryTraceImpl.SpanError(ctx, rerr)
+					secondaryTraceImpl.SpanError(secondaryCtx, rerr)
 				}
 				return secondaryLog.EventErrKv("dbr.secondary.select.load.query", rerr, kvs{
 					"sql": secondaryQuery,
