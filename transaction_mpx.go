@@ -211,7 +211,7 @@ func (txMpx *TxMpx) RollbackUnlessCommitted() {
 	}}
 
 	err := txMpx.SecondaryQ.AddJobAndClose(j)
-	if err != nil {
+	if err != nil && err != errFailedToAddJob {
 		txMpx.SecondaryTx.EventErr("dbr.secondary.rollback_unless_committed", err)
 	}
 
