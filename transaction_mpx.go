@@ -50,7 +50,9 @@ func (smpx *SessionMpx) BeginTxs(ctx context.Context, opts *sql.TxOptions) (*TxM
 	}
 	smpx.PrimaryConn.Event("dbr.primary.begin")
 
-	q := NewWorkingQueue(context.Background(), 500, smpx.SecondaryEventReceiver)
+	secondaryCtx := context.Background()
+
+	q := NewWorkingQueue(secondaryCtx, 500, smpx.SecondaryEventReceiver)
 	txmPx := &TxMpx{
 		PrimaryTx: &Tx{
 			EventReceiver: smpx.PrimaryEventReceiver,
@@ -67,10 +69,11 @@ func (smpx *SessionMpx) BeginTxs(ctx context.Context, opts *sql.TxOptions) (*TxM
 	}
 
 	j := NewJob("dbr.secondary.begin", nil, func() error {
-		secondaryTx, rerr := smpx.SecondaryConn.BeginTx(ctx, opts)
+		secondaryTx, rerr := smpx.SecondaryConn.BeginTx(secondaryCtx, opts)
 		if rerr != nil {
 			return rerr
 		}
+
 		txmPx.SecondaryTx.Tx = secondaryTx
 		return nil
 	})
@@ -108,7 +111,8 @@ func (txMpx *TxMpx) ExecContext(ctx context.Context, query string, args ...inter
 		if txMpx.SecondaryTx.Tx == nil {
 			return ErrSecondaryTxNotFound
 		}
-		_, err := txMpx.SecondaryTx.ExecContext(ctx, query, args...)
+
+		_, err := txMpx.SecondaryTx.ExecContext(context.Background(), query, args...)
 		return err
 	})
 	err = txMpx.AddJob(j)
@@ -196,7 +200,7 @@ func (txMpx *TxMpx) RollbackUnlessCommitted() {
 		}
 
 		err := txMpx.SecondaryTx.Rollback()
-		if err == sql.ErrTxDone {
+		if err == sql.ErrTxDone || err == errFailedToAddJob {
 			// ok
 		} else if err != nil {
 			txMpx.SecondaryTx.EventErr("dbr.secondary.rollback_unless_committed", err)
