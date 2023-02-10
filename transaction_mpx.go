@@ -29,6 +29,9 @@ func (txMpx *TxMpx) PrimaryExecContext(ctx context.Context, query string, args .
 }
 
 func (txMpx *TxMpx) SecondaryExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
+	if txMpx.SecondaryTx.Tx == nil {
+		return nil, ErrSecondaryTxNotFound
+	}
 	return txMpx.SecondaryTx.ExecContext(ctx, query, args...)
 }
 
@@ -37,6 +40,9 @@ func (txMpx *TxMpx) PrimaryQueryContext(ctx context.Context, query string, args 
 }
 
 func (txMpx *TxMpx) SecondaryQueryContext(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error) {
+	if txMpx.SecondaryTx.Tx == nil {
+		return nil, ErrSecondaryTxNotFound
+	}
 	return txMpx.SecondaryTx.QueryContext(ctx, query, args...)
 }
 
