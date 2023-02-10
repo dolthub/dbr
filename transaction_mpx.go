@@ -209,7 +209,7 @@ func (txMpx *TxMpx) RollbackUnlessCommitted() {
 		if err == sql.ErrTxDone || err == errFailedToAddJob {
 			// ok
 		} else if err != nil {
-			txMpx.SecondaryTx.EventErr("dbr.secondary.rollback_unless_committed", err)
+			txMpx.SecondaryTx.EventErr("dbr.secondary.rollback.rollback_unless_committed", err)
 		} else {
 			txMpx.SecondaryTx.Event("dbr.secondary.rollback")
 		}
@@ -218,7 +218,7 @@ func (txMpx *TxMpx) RollbackUnlessCommitted() {
 
 	err := txMpx.SecondaryQ.AddJobAndClose(j)
 	if err != nil && err != errFailedToAddJob {
-		txMpx.SecondaryTx.EventErr("dbr.secondary.rollback_unless_committed", err)
+		txMpx.SecondaryTx.EventErr("dbr.secondary.add_and_close.rollback_unless_committed", err)
 	}
 
 	go func() {
