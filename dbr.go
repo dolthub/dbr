@@ -187,7 +187,7 @@ func (sessMpx *SessionMpx) ExecContext(ctx context.Context, query string, args .
 	}
 
 	j := NewJob("dbr.secondary.exec_context", map[string]string{"sql": query}, func() error {
-		_, err := sessMpx.SecondaryExecContext(context.Background(), query, args...)
+		_, err := sessMpx.SecondaryExecContext(NewContextWithMetricValues(ctx), query, args...)
 		return err
 	})
 	err = sessMpx.AddJob(j)
@@ -378,7 +378,7 @@ func execMpx(
 		})
 	}
 
-	baseSecondaryCtx := context.Background()
+	baseSecondaryCtx := NewContextWithMetricValues(ctx)
 
 	j := &Job{
 		exec: func() error {
@@ -571,7 +571,7 @@ func queryRowsMpx(ctx context.Context, runnerMpx RunnerMpx, primaryLog, secondar
 		})
 	}
 
-	secondaryCtx := context.Background()
+	secondaryCtx := NewContextWithMetricValues(ctx)
 	j := &Job{
 		exec: func() error {
 			secondaryI := interpolator{
