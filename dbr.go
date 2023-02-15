@@ -12,6 +12,8 @@ import (
 	"github.com/gocraft/dbr/v2/dialect"
 )
 
+var errRowsAffectedNotEqual = errors.New("rows affected not equal")
+
 // Open creates a Connection.
 // log can be nil to ignore logging.
 func Open(driver, dsn string, log EventReceiver) (*Connection, error) {
@@ -440,7 +442,10 @@ func execMpx(
 
 			if secondaryRowsAffected != primaryRowsAffected {
 				// don't return here, just log that they aren't equal
-				secondaryLog.EventErrKv("dbr.secondary.primary.assertion.error", errors.New("rows affected not equal"), kvs{
+				if secondaryHasTracingImpl {
+					secondaryTraceImpl.SpanError(secondaryCtx, errRowsAffectedNotEqual)
+				}
+				secondaryLog.EventErrKv("dbr.secondary.primary.assertion.error", errRowsAffectedNotEqual, kvs{
 					"primarySql":            primaryQuery,
 					"primaryRowsAffected":   strconv.FormatInt(primaryRowsAffected, 10),
 					"secondarySql":          secondaryQuery,
