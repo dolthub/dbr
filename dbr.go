@@ -12,6 +12,8 @@ import (
 	"github.com/gocraft/dbr/v2/dialect"
 )
 
+var errRowsAffectedNotEqual = errors.New("rows affected not equal")
+
 // Open creates a Connection.
 // log can be nil to ignore logging.
 func Open(driver, dsn string, log EventReceiver) (*Connection, error) {
@@ -185,7 +187,7 @@ func (sessMpx *SessionMpx) ExecContext(ctx context.Context, query string, args .
 	}
 
 	j := NewJob("dbr.secondary.exec_context", map[string]string{"sql": query}, func() error {
-		_, err := sessMpx.SecondaryExecContext(context.Background(), query, args...)
+		_, err := sessMpx.SecondaryExecContext(NewContextWithMetricValues(ctx), query, args...)
 		return err
 	})
 	err = sessMpx.AddJob(j)
@@ -376,7 +378,7 @@ func execMpx(
 		})
 	}
 
-	baseSecondaryCtx := context.Background()
+	baseSecondaryCtx := NewContextWithMetricValues(ctx)
 
 	j := &Job{
 		exec: func() error {
@@ -440,7 +442,10 @@ func execMpx(
 
 			if secondaryRowsAffected != primaryRowsAffected {
 				// don't return here, just log that they aren't equal
-				secondaryLog.EventErrKv("dbr.secondary.primary.assertion.error", errors.New("rows affected not equal"), kvs{
+				if secondaryHasTracingImpl {
+					secondaryTraceImpl.SpanError(secondaryCtx, errRowsAffectedNotEqual)
+				}
+				secondaryLog.EventErrKv("dbr.secondary.primary.assertion.error", errRowsAffectedNotEqual, kvs{
 					"primarySql":            primaryQuery,
 					"primaryRowsAffected":   strconv.FormatInt(primaryRowsAffected, 10),
 					"secondarySql":          secondaryQuery,
@@ -566,7 +571,7 @@ func queryRowsMpx(ctx context.Context, runnerMpx RunnerMpx, primaryLog, secondar
 		})
 	}
 
-	secondaryCtx := context.Background()
+	secondaryCtx := NewContextWithMetricValues(ctx)
 	j := &Job{
 		exec: func() error {
 			secondaryI := interpolator{

@@ -56,7 +56,7 @@ func (smpx *SessionMpx) BeginTxs(ctx context.Context, opts *sql.TxOptions) (*TxM
 	}
 	smpx.PrimaryConn.Event("dbr.primary.begin")
 
-	secondaryCtx := context.Background()
+	secondaryCtx := NewContextWithMetricValues(ctx)
 
 	q := NewWorkingQueue(secondaryCtx, 500, smpx.SecondaryEventReceiver)
 	txmPx := &TxMpx{
@@ -118,7 +118,7 @@ func (txMpx *TxMpx) ExecContext(ctx context.Context, query string, args ...inter
 			return ErrSecondaryTxNotFound
 		}
 
-		_, err := txMpx.SecondaryTx.ExecContext(context.Background(), query, args...)
+		_, err := txMpx.SecondaryTx.ExecContext(NewContextWithMetricValues(ctx), query, args...)
 		return err
 	})
 	err = txMpx.AddJob(j)
