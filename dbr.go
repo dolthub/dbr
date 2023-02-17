@@ -56,14 +56,16 @@ type Connection struct {
 // It uses a Queue to execute statements against the secondary
 // connection
 type ConnectionMpx struct {
-	PrimaryConn   *Connection
-	SecondaryConn *Connection
+	shouldSyncAtCommit bool
+	PrimaryConn        *Connection
+	SecondaryConn      *Connection
 }
 
-func NewConnectionMpxFromConnections(primaryConn *Connection, secondaryConn *Connection) *ConnectionMpx {
+func NewConnectionMpxFromConnections(primaryConn *Connection, secondaryConn *Connection, shouldSyncAtCommit bool) *ConnectionMpx {
 	return &ConnectionMpx{
-		PrimaryConn:   primaryConn,
-		SecondaryConn: secondaryConn,
+		shouldSyncAtCommit: shouldSyncAtCommit,
+		PrimaryConn:        primaryConn,
+		SecondaryConn:      secondaryConn,
 	}
 }
 
@@ -441,11 +443,10 @@ func execMpx(
 			}
 
 			if secondaryRowsAffected != primaryRowsAffected {
-				// don't return here, just log that they aren't equal
 				if secondaryHasTracingImpl {
 					secondaryTraceImpl.SpanError(secondaryCtx, errRowsAffectedNotEqual)
 				}
-				secondaryLog.EventErrKv("dbr.secondary.primary.assertion.error", errRowsAffectedNotEqual, kvs{
+				return secondaryLog.EventErrKv("dbr.secondary.primary.assertion.error", errRowsAffectedNotEqual, kvs{
 					"primarySql":            primaryQuery,
 					"primaryRowsAffected":   strconv.FormatInt(primaryRowsAffected, 10),
 					"secondarySql":          secondaryQuery,

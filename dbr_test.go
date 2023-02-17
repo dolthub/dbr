@@ -44,7 +44,7 @@ func createSessionMpx(ctx context.Context, primaryDriver, primaryDsn, secondaryD
 		panic(err)
 	}
 
-	connMpx := NewConnectionMpxFromConnections(primaryConn, secondaryConn)
+	connMpx := NewConnectionMpxFromConnections(primaryConn, secondaryConn, false)
 	return connMpx.NewSessionMpx(nil, nil)
 }
 

@@ -11,9 +11,10 @@ var ErrSecondaryTxNotFound = errors.New("secondary tx not found")
 
 // TxMpx is a multiplexed transaction created by SessionMpx.
 type TxMpx struct {
-	PrimaryTx   *Tx
-	SecondaryTx *Tx
-	SecondaryQ  *Queue
+	shouldSyncAtCommit bool
+	PrimaryTx          *Tx
+	SecondaryTx        *Tx
+	SecondaryQ         *Queue
 }
 
 func (txMpx *TxMpx) AddJob(job *Job) error {
@@ -60,6 +61,7 @@ func (smpx *SessionMpx) BeginTxs(ctx context.Context, opts *sql.TxOptions) (*TxM
 
 	q := NewWorkingQueue(secondaryCtx, 500, smpx.SecondaryEventReceiver)
 	txmPx := &TxMpx{
+		shouldSyncAtCommit: smpx.shouldSyncAtCommit,
 		PrimaryTx: &Tx{
 			EventReceiver: smpx.PrimaryEventReceiver,
 			Dialect:       smpx.PrimaryConn.Dialect,
@@ -147,12 +149,21 @@ func (txMpx *TxMpx) Commit() error {
 		return err
 	}
 
-	go func() {
-		werr := txMpx.SecondaryQ.Wait()
-		if werr != nil {
-			txMpx.SecondaryTx.EventErr("dbr.secondary.queue.wait", werr)
+	// if true, block on secondary commit
+	if txMpx.shouldSyncAtCommit {
+		err = txMpx.SecondaryQ.Wait()
+		if err != nil {
+			txMpx.SecondaryTx.EventErr("dbr.secondary.queue.wait", err)
+			return err
 		}
-	}()
+	} else {
+		go func() {
+			werr := txMpx.SecondaryQ.Wait()
+			if werr != nil {
+				txMpx.SecondaryTx.EventErr("dbr.secondary.queue.wait", werr)
+			}
+		}()
+	}
 
 	err = txMpx.PrimaryTx.Commit()
 	if err != nil {
