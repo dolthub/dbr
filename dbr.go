@@ -13,6 +13,7 @@ import (
 )
 
 var errRowsAffectedNotEqual = errors.New("rows affected not equal")
+var errSecondaryRowCountPrimaryRowCountUnEqual = errors.New("secondary row count and primary row count not equal")
 
 // Open creates a Connection.
 // log can be nil to ignore logging.
@@ -57,13 +58,15 @@ type Connection struct {
 // connection
 type ConnectionMpx struct {
 	shouldSyncAtCommit bool
+	enableDoubleReads  bool
 	PrimaryConn        *Connection
 	SecondaryConn      *Connection
 }
 
-func NewConnectionMpxFromConnections(primaryConn *Connection, secondaryConn *Connection, shouldSyncAtCommit bool) *ConnectionMpx {
+func NewConnectionMpxFromConnections(primaryConn *Connection, secondaryConn *Connection, shouldSyncAtCommit, enableDoubleReads bool) *ConnectionMpx {
 	return &ConnectionMpx{
 		shouldSyncAtCommit: shouldSyncAtCommit,
+		enableDoubleReads:  enableDoubleReads,
 		PrimaryConn:        primaryConn,
 		SecondaryConn:      secondaryConn,
 	}
@@ -602,7 +605,7 @@ func queryRowsMpx(ctx context.Context, runnerMpx RunnerMpx, primaryLog, secondar
 				defer secondaryTraceImpl.SpanFinish(secondaryCtx)
 			}
 
-			_, rerr = runnerMpx.SecondaryQueryContext(secondaryCtx, secondaryQuery, secondaryValue...)
+			secondaryRows, rerr := runnerMpx.SecondaryQueryContext(secondaryCtx, secondaryQuery, secondaryValue...)
 			if rerr != nil {
 				if secondaryHasTracingImpl {
 					secondaryTraceImpl.SpanError(secondaryCtx, rerr)
@@ -611,6 +614,15 @@ func queryRowsMpx(ctx context.Context, runnerMpx RunnerMpx, primaryLog, secondar
 					"sql": secondaryQuery,
 				})
 			}
+
+			rerr = compareRows(primaryRows, secondaryRows)
+			if rerr != nil {
+				if secondaryHasTracingImpl {
+					secondaryTraceImpl.SpanError(secondaryCtx, rerr)
+				}
+				return secondaryLog.EventErr("dbr.secondary.primary.compare.rows", rerr)
+			}
+
 			return nil
 		},
 	}
@@ -637,4 +649,19 @@ func queryMpx(ctx context.Context, runnerMpx RunnerMpx, primaryLog, secondaryLog
 	}
 
 	return count, query, err
+}
+
+func compareRows(primaryRows, secondaryRows *sql.Rows) error {
+	primaryCount := 0
+	secondaryCount := 0
+	for primaryRows.Next() {
+		primaryCount++
+	}
+	for secondaryRows.Next() {
+		secondaryCount++
+	}
+	if primaryCount != secondaryCount {
+		return errSecondaryRowCountPrimaryRowCountUnEqual
+	}
+	return nil
 }

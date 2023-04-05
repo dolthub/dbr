@@ -12,6 +12,7 @@ var ErrSecondaryTxNotFound = errors.New("secondary tx not found")
 // TxMpx is a multiplexed transaction created by SessionMpx.
 type TxMpx struct {
 	shouldSyncAtCommit bool
+	enableDoubleReads  bool
 	PrimaryTx          *Tx
 	SecondaryTx        *Tx
 	SecondaryQ         *Queue
@@ -62,6 +63,7 @@ func (smpx *SessionMpx) BeginTxs(ctx context.Context, opts *sql.TxOptions) (*TxM
 	q := NewWorkingQueue(secondaryCtx, 500, smpx.SecondaryEventReceiver)
 	txmPx := &TxMpx{
 		shouldSyncAtCommit: smpx.shouldSyncAtCommit,
+		enableDoubleReads:  smpx.enableDoubleReads,
 		PrimaryTx: &Tx{
 			EventReceiver: smpx.PrimaryEventReceiver,
 			Dialect:       smpx.PrimaryConn.Dialect,
