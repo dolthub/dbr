@@ -13,7 +13,6 @@ import (
 )
 
 var errRowsAffectedNotEqual = errors.New("rows affected not equal")
-var errSecondaryRowCountPrimaryRowCountUnEqual = errors.New("secondary row count and primary row count not equal")
 
 // Open creates a Connection.
 // log can be nil to ignore logging.
@@ -470,7 +469,7 @@ func execMpx(
 func queryRows(ctx context.Context, runner runner, log EventReceiver, builder Builder, d Dialect) (string, *sql.Rows, error) {
 	// discard the timeout set in the runner, the context should not be canceled
 	// implicitly here but explicitly by the caller since the returned *sql.Rows
-	// may still listening to the context
+	// may still be listening to the context
 	i := interpolator{
 		Buffer:       NewBuffer(),
 		Dialect:      d,
@@ -537,7 +536,7 @@ func queryRowsMpx(ctx context.Context, runnerMpx RunnerMpx, primaryLog, secondar
 
 	// discard the timeout set in the runner, the context should not be canceled
 	// implicitly here but explicitly by the caller since the returned *sql.Rows
-	// may still listening to the context
+	// may still be listening to the context
 	primaryI := interpolator{
 		Buffer:       NewBuffer(),
 		Dialect:      primaryD,
@@ -605,7 +604,7 @@ func queryRowsMpx(ctx context.Context, runnerMpx RunnerMpx, primaryLog, secondar
 				defer secondaryTraceImpl.SpanFinish(secondaryCtx)
 			}
 
-			secondaryRows, rerr := runnerMpx.SecondaryQueryContext(secondaryCtx, secondaryQuery, secondaryValue...)
+			_, rerr = runnerMpx.SecondaryQueryContext(secondaryCtx, secondaryQuery, secondaryValue...)
 			if rerr != nil {
 				if secondaryHasTracingImpl {
 					secondaryTraceImpl.SpanError(secondaryCtx, rerr)
@@ -613,14 +612,6 @@ func queryRowsMpx(ctx context.Context, runnerMpx RunnerMpx, primaryLog, secondar
 				return secondaryLog.EventErrKv("dbr.secondary.select.load.query", rerr, kvs{
 					"sql": secondaryQuery,
 				})
-			}
-
-			rerr = compareRows(primaryRows, secondaryRows)
-			if rerr != nil {
-				if secondaryHasTracingImpl {
-					secondaryTraceImpl.SpanError(secondaryCtx, rerr)
-				}
-				return secondaryLog.EventErr("dbr.secondary.primary.compare.rows", rerr)
 			}
 
 			return nil
@@ -649,19 +640,4 @@ func queryMpx(ctx context.Context, runnerMpx RunnerMpx, primaryLog, secondaryLog
 	}
 
 	return count, query, err
-}
-
-func compareRows(primaryRows, secondaryRows *sql.Rows) error {
-	primaryCount := 0
-	secondaryCount := 0
-	for primaryRows.Next() {
-		primaryCount++
-	}
-	for secondaryRows.Next() {
-		secondaryCount++
-	}
-	if primaryCount != secondaryCount {
-		return errSecondaryRowCountPrimaryRowCountUnEqual
-	}
-	return nil
 }
