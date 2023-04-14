@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"time"
 )
 
@@ -13,6 +14,7 @@ var ErrSecondaryTxNotFound = errors.New("secondary tx not found")
 type TxMpx struct {
 	shouldSyncAtCommit bool
 	enableDoubleReads  bool
+	smpx               *SessionMpx
 	PrimaryTx          *Tx
 	SecondaryTx        *Tx
 	SecondaryQ         *Queue
@@ -45,6 +47,10 @@ func (txMpx *TxMpx) SecondaryQueryContext(ctx context.Context, query string, arg
 	if txMpx.SecondaryTx.Tx == nil {
 		return nil, ErrSecondaryTxNotFound
 	}
+	rerr := txMpx.smpx.SecondaryConn.Ping()
+	if rerr != nil {
+		return nil, fmt.Errorf("DUSTIN: secondary query context 1: PING: %s", rerr.Error())
+	}
 	return txMpx.SecondaryTx.QueryContext(ctx, query, args...)
 }
 
@@ -76,9 +82,15 @@ func (smpx *SessionMpx) BeginTxs(ctx context.Context, opts *sql.TxOptions) (*TxM
 			Timeout:       to,
 		},
 		SecondaryQ: q,
+		smpx:       smpx,
 	}
 
 	j := NewJob("dbr.secondary.begin", nil, func() error {
+		rerr := smpx.SecondaryConn.Ping()
+		if rerr != nil {
+			return fmt.Errorf("DUSTIN: begin: PING: %s", rerr.Error())
+		}
+
 		secondaryTx, rerr := smpx.SecondaryConn.BeginTx(secondaryCtx, opts)
 		if rerr != nil {
 			return rerr
@@ -134,7 +146,30 @@ func (txMpx *TxMpx) ExecContext(ctx context.Context, query string, args ...inter
 }
 
 func (txMpx *TxMpx) QueryContext(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error) {
-	return txMpx.PrimaryTx.QueryContext(ctx, query, args...)
+	primaryRows, err := txMpx.PrimaryTx.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+
+	j := NewJob("dbr.secondary.query_context", map[string]string{"sql": query}, func() error {
+		if txMpx.SecondaryTx.Tx == nil {
+			return ErrSecondaryTxNotFound
+		}
+
+		rerr := txMpx.smpx.SecondaryConn.Ping()
+		if rerr != nil {
+			return fmt.Errorf("DUSTIN: secondary query context 2: PING: %s", rerr.Error())
+		}
+
+		_, err := txMpx.SecondaryTx.QueryContext(NewContextWithMetricValues(ctx), query, args...)
+		return err
+	})
+	err = txMpx.AddJob(j)
+	if err != nil {
+		return nil, err
+	}
+
+	return primaryRows, nil
 }
 
 // Commit finishes the transaction.
@@ -216,6 +251,11 @@ func (txMpx *TxMpx) RollbackUnlessCommitted() {
 	j := &Job{exec: func() error {
 		if txMpx.SecondaryTx.Tx == nil {
 			return ErrSecondaryTxNotFound
+		}
+
+		rerr := txMpx.smpx.SecondaryConn.Ping()
+		if rerr != nil {
+			return fmt.Errorf("DUSTIN: secondary rollback unless committed: PING: %s", rerr.Error())
 		}
 
 		err := txMpx.SecondaryTx.Rollback()
