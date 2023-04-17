@@ -634,10 +634,10 @@ func queryMpx(ctx context.Context, runnerMpx RunnerMpx, primaryLog, secondaryLog
 	}
 
 	query, rows, err := queryRowsMpx(ctx, runnerMpx, primaryLog, secondaryLog, builder, primaryD, secondaryD)
-	count, err := Load(rows, primaryDest)
 	if err != nil {
 		return 0, "", err
 	}
 
+	count, err := Load(rows, primaryDest)
 	return count, query, err
 }

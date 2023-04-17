@@ -9,6 +9,7 @@ import (
 var (
 	secondaryBeginEvt    = evt{eventName: "dbr.secondary.begin"}
 	secondaryExecEvt     = evt{eventName: "dbr.secondary.exec"}
+	secondarySelectEvt   = evt{eventName: "dbr.secondary.select"}
 	commitEvt            = evt{eventName: "dbr.commit"}
 	rollbackEvt          = evt{eventName: "dbr.rollback"}
 	secondaryCommitEvt   = evt{eventName: "dbr.secondary.commit"}
