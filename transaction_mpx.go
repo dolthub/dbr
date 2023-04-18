@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"fmt"
 	"time"
 )
 
@@ -47,10 +46,6 @@ func (txMpx *TxMpx) SecondaryQueryContext(ctx context.Context, query string, arg
 	if txMpx.SecondaryTx.Tx == nil {
 		return nil, ErrSecondaryTxNotFound
 	}
-	rerr := txMpx.smpx.SecondaryConn.Ping()
-	if rerr != nil {
-		return nil, fmt.Errorf("DUSTIN: secondary query context 1: PING: %s", rerr.Error())
-	}
 	return txMpx.SecondaryTx.QueryContext(ctx, query, args...)
 }
 
@@ -86,11 +81,6 @@ func (smpx *SessionMpx) BeginTxs(ctx context.Context, opts *sql.TxOptions) (*TxM
 	}
 
 	j := NewJob("dbr.secondary.begin", nil, func() error {
-		rerr := smpx.SecondaryConn.Ping()
-		if rerr != nil {
-			return fmt.Errorf("DUSTIN: begin: PING: %s", rerr.Error())
-		}
-
 		secondaryTx, rerr := smpx.SecondaryConn.BeginTx(secondaryCtx, opts)
 		if rerr != nil {
 			return rerr
@@ -154,11 +144,6 @@ func (txMpx *TxMpx) QueryContext(ctx context.Context, query string, args ...inte
 	j := NewJob("dbr.secondary.query_context", map[string]string{"sql": query}, func() error {
 		if txMpx.SecondaryTx.Tx == nil {
 			return ErrSecondaryTxNotFound
-		}
-
-		rerr := txMpx.smpx.SecondaryConn.Ping()
-		if rerr != nil {
-			return fmt.Errorf("DUSTIN: secondary query context 2: PING: %s", rerr.Error())
 		}
 
 		_, err := txMpx.SecondaryTx.QueryContext(NewContextWithMetricValues(ctx), query, args...)
@@ -251,11 +236,6 @@ func (txMpx *TxMpx) RollbackUnlessCommitted() {
 	j := &Job{exec: func() error {
 		if txMpx.SecondaryTx.Tx == nil {
 			return ErrSecondaryTxNotFound
-		}
-
-		rerr := txMpx.smpx.SecondaryConn.Ping()
-		if rerr != nil {
-			return fmt.Errorf("DUSTIN: secondary rollback unless committed: PING: %s", rerr.Error())
 		}
 
 		err := txMpx.SecondaryTx.Rollback()
