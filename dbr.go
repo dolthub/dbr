@@ -604,7 +604,7 @@ func queryRowsMpx(ctx context.Context, runnerMpx RunnerMpx, primaryLog, secondar
 				defer secondaryTraceImpl.SpanFinish(secondaryCtx)
 			}
 
-			_, rerr = runnerMpx.SecondaryQueryContext(secondaryCtx, secondaryQuery, secondaryValue...)
+			secondaryRows, rerr := runnerMpx.SecondaryQueryContext(secondaryCtx, secondaryQuery, secondaryValue...)
 			if rerr != nil {
 				if secondaryHasTracingImpl {
 					secondaryTraceImpl.SpanError(secondaryCtx, rerr)
@@ -612,6 +612,28 @@ func queryRowsMpx(ctx context.Context, runnerMpx RunnerMpx, primaryLog, secondar
 				return secondaryLog.EventErrKv("dbr.secondary.select.load.query", rerr, kvs{
 					"sql": secondaryQuery,
 				})
+			}
+			defer func() {
+				cerr := secondaryRows.Close()
+				if cerr != nil {
+					if secondaryHasTracingImpl {
+						secondaryTraceImpl.SpanError(secondaryCtx, cerr)
+					}
+					secondaryLog.EventErr("dbr.secondary.select.rows.close", cerr)
+				}
+			}()
+
+			// iterate secondary rows
+			// in place of calling Load()
+			for secondaryRows.Next() {
+			}
+
+			rerr = secondaryRows.Err()
+			if rerr != nil {
+				if secondaryHasTracingImpl {
+					secondaryTraceImpl.SpanError(secondaryCtx, rerr)
+				}
+				return secondaryLog.EventErr("dbr.secondary.select.rows.error", rerr)
 			}
 
 			return nil
