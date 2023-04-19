@@ -44,7 +44,7 @@ func createSessionMpx(ctx context.Context, primaryDriver, primaryDsn, secondaryD
 		panic(err)
 	}
 
-	connMpx := NewConnectionMpxFromConnections(primaryConn, secondaryConn, false)
+	connMpx := NewConnectionMpxFromConnections(primaryConn, secondaryConn, true, true)
 	return connMpx.NewSessionMpx(nil, nil)
 }
 
@@ -238,10 +238,15 @@ func TestBasicCRUDMpx(t *testing.T) {
 	resetMpx(t, sessMpx)
 
 	expectedEvents := []evt{
-		secondaryExecEvt,  // insert
-		secondaryExecEvt,  // update
-		secondaryExecEvt,  // delete
-		secondaryCloseEvt, // from sessMpx.Close()
+		secondaryExecEvt,   // insert
+		secondarySelectEvt, // select
+		secondarySelectEvt, // select
+		secondarySelectEvt, // select
+		secondaryExecEvt,   // update
+		secondarySelectEvt, // select
+		secondaryExecEvt,   // delete
+		secondarySelectEvt, // select
+		secondaryCloseEvt,  // from sessMpx.Close()
 	}
 
 	secondaryLogTracer := newRequireTraceReceiver()
@@ -266,9 +271,9 @@ func TestBasicCRUDMpx(t *testing.T) {
 	result, err := sessMpx.InsertInto("dbr_people").Columns(insertColumns...).Record(&jonathan).Exec()
 	require.NoError(t, err)
 
-	primaryRowsAffected, err := result.RowsAffected()
+	rowsAffected, err := result.RowsAffected()
 	require.NoError(t, err)
-	require.Equal(t, int64(1), primaryRowsAffected)
+	require.Equal(t, int64(1), rowsAffected)
 
 	require.True(t, jonathan.Id > 0)
 
@@ -295,10 +300,11 @@ func TestBasicCRUDMpx(t *testing.T) {
 	result, err = sessMpx.Update("dbr_people").Where(Eq("id", jonathan.Id)).Set("name", "jonathan1").Exec()
 	require.NoError(t, err)
 
-	primaryRowsAffected, err = result.RowsAffected()
+	rowsAffected, err = result.RowsAffected()
 	require.NoError(t, err)
-	require.Equal(t, int64(1), primaryRowsAffected)
+	require.Equal(t, int64(1), rowsAffected)
 
+	// select
 	var n NullInt64
 	sessMpx.Select("count(*)").From("dbr_people").Where("name = ?", "jonathan1").LoadOne(&n)
 	require.Equal(t, int64(1), n.Int64)
@@ -307,9 +313,9 @@ func TestBasicCRUDMpx(t *testing.T) {
 	result, err = sessMpx.DeleteFrom("dbr_people").Where(Eq("id", jonathan.Id)).Exec()
 	require.NoError(t, err)
 
-	primaryRowsAffected, err = result.RowsAffected()
+	rowsAffected, err = result.RowsAffected()
 	require.NoError(t, err)
-	require.Equal(t, int64(1), primaryRowsAffected)
+	require.Equal(t, int64(1), rowsAffected)
 
 	// select id
 	ids, err = sessMpx.Select("id").From("dbr_people").ReturnInt64s()

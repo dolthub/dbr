@@ -62,7 +62,7 @@ func TestTransactionCommitMpx(t *testing.T) {
 	err = txMpx.Commit()
 	require.NoError(t, err)
 
-	// selects use only primary
+	// select
 	var person dbrPerson
 	err = txMpx.Select("*").From("dbr_people").Where(Eq("id", id)).LoadOne(&person)
 	require.Error(t, err)
@@ -116,7 +116,7 @@ func TestTransactionMpxRollback(t *testing.T) {
 	err = txMpx.Rollback()
 	require.NoError(t, err)
 
-	// Selects use only primary
+	// select
 	var person dbrPerson
 	err = txMpx.Select("*").From("dbr_people").Where(Eq("id", id)).LoadOne(&person)
 	require.Error(t, err)

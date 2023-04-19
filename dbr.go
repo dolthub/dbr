@@ -57,13 +57,15 @@ type Connection struct {
 // connection
 type ConnectionMpx struct {
 	shouldSyncAtCommit bool
+	enableDoubleReads  bool
 	PrimaryConn        *Connection
 	SecondaryConn      *Connection
 }
 
-func NewConnectionMpxFromConnections(primaryConn *Connection, secondaryConn *Connection, shouldSyncAtCommit bool) *ConnectionMpx {
+func NewConnectionMpxFromConnections(primaryConn *Connection, secondaryConn *Connection, shouldSyncAtCommit, enableDoubleReads bool) *ConnectionMpx {
 	return &ConnectionMpx{
 		shouldSyncAtCommit: shouldSyncAtCommit,
+		enableDoubleReads:  enableDoubleReads,
 		PrimaryConn:        primaryConn,
 		SecondaryConn:      secondaryConn,
 	}
@@ -467,7 +469,7 @@ func execMpx(
 func queryRows(ctx context.Context, runner runner, log EventReceiver, builder Builder, d Dialect) (string, *sql.Rows, error) {
 	// discard the timeout set in the runner, the context should not be canceled
 	// implicitly here but explicitly by the caller since the returned *sql.Rows
-	// may still listening to the context
+	// may still be listening to the context
 	i := interpolator{
 		Buffer:       NewBuffer(),
 		Dialect:      d,
@@ -534,7 +536,7 @@ func queryRowsMpx(ctx context.Context, runnerMpx RunnerMpx, primaryLog, secondar
 
 	// discard the timeout set in the runner, the context should not be canceled
 	// implicitly here but explicitly by the caller since the returned *sql.Rows
-	// may still listening to the context
+	// may still be listening to the context
 	primaryI := interpolator{
 		Buffer:       NewBuffer(),
 		Dialect:      primaryD,
@@ -602,7 +604,7 @@ func queryRowsMpx(ctx context.Context, runnerMpx RunnerMpx, primaryLog, secondar
 				defer secondaryTraceImpl.SpanFinish(secondaryCtx)
 			}
 
-			_, rerr = runnerMpx.SecondaryQueryContext(secondaryCtx, secondaryQuery, secondaryValue...)
+			secondaryRows, rerr := runnerMpx.SecondaryQueryContext(secondaryCtx, secondaryQuery, secondaryValue...)
 			if rerr != nil {
 				if secondaryHasTracingImpl {
 					secondaryTraceImpl.SpanError(secondaryCtx, rerr)
@@ -611,6 +613,29 @@ func queryRowsMpx(ctx context.Context, runnerMpx RunnerMpx, primaryLog, secondar
 					"sql": secondaryQuery,
 				})
 			}
+			defer func() {
+				cerr := secondaryRows.Close()
+				if cerr != nil {
+					if secondaryHasTracingImpl {
+						secondaryTraceImpl.SpanError(secondaryCtx, cerr)
+					}
+					secondaryLog.EventErr("dbr.secondary.select.rows.close", cerr)
+				}
+			}()
+
+			// iterate secondary rows
+			// in place of calling Load()
+			for secondaryRows.Next() {
+			}
+
+			rerr = secondaryRows.Err()
+			if rerr != nil {
+				if secondaryHasTracingImpl {
+					secondaryTraceImpl.SpanError(secondaryCtx, rerr)
+				}
+				return secondaryLog.EventErr("dbr.secondary.select.rows.error", rerr)
+			}
+
 			return nil
 		},
 	}
@@ -631,10 +656,10 @@ func queryMpx(ctx context.Context, runnerMpx RunnerMpx, primaryLog, secondaryLog
 	}
 
 	query, rows, err := queryRowsMpx(ctx, runnerMpx, primaryLog, secondaryLog, builder, primaryD, secondaryD)
-	count, err := Load(rows, primaryDest)
 	if err != nil {
 		return 0, "", err
 	}
 
+	count, err := Load(rows, primaryDest)
 	return count, query, err
 }

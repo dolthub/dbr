@@ -12,6 +12,8 @@ var ErrSecondaryTxNotFound = errors.New("secondary tx not found")
 // TxMpx is a multiplexed transaction created by SessionMpx.
 type TxMpx struct {
 	shouldSyncAtCommit bool
+	enableDoubleReads  bool
+	smpx               *SessionMpx
 	PrimaryTx          *Tx
 	SecondaryTx        *Tx
 	SecondaryQ         *Queue
@@ -62,6 +64,7 @@ func (smpx *SessionMpx) BeginTxs(ctx context.Context, opts *sql.TxOptions) (*TxM
 	q := NewWorkingQueue(secondaryCtx, 500, smpx.SecondaryEventReceiver)
 	txmPx := &TxMpx{
 		shouldSyncAtCommit: smpx.shouldSyncAtCommit,
+		enableDoubleReads:  smpx.enableDoubleReads,
 		PrimaryTx: &Tx{
 			EventReceiver: smpx.PrimaryEventReceiver,
 			Dialect:       smpx.PrimaryConn.Dialect,
@@ -74,6 +77,7 @@ func (smpx *SessionMpx) BeginTxs(ctx context.Context, opts *sql.TxOptions) (*TxM
 			Timeout:       to,
 		},
 		SecondaryQ: q,
+		smpx:       smpx,
 	}
 
 	j := NewJob("dbr.secondary.begin", nil, func() error {
@@ -132,7 +136,42 @@ func (txMpx *TxMpx) ExecContext(ctx context.Context, query string, args ...inter
 }
 
 func (txMpx *TxMpx) QueryContext(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error) {
-	return txMpx.PrimaryTx.QueryContext(ctx, query, args...)
+	primaryRows, err := txMpx.PrimaryTx.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+
+	j := NewJob("dbr.secondary.query_context", map[string]string{"sql": query}, func() (rerr error) {
+		if txMpx.SecondaryTx.Tx == nil {
+			rerr = ErrSecondaryTxNotFound
+			return
+		}
+
+		var secondaryRows *sql.Rows
+		secondaryRows, rerr = txMpx.SecondaryTx.QueryContext(NewContextWithMetricValues(ctx), query, args...)
+		if rerr != nil {
+			return
+		}
+		defer func() {
+			cerr := secondaryRows.Close()
+			if rerr == nil {
+				rerr = cerr
+			}
+		}()
+
+		// iterate secondary rows
+		// which wont be returned
+		for secondaryRows.Next() {
+		}
+		rerr = secondaryRows.Err()
+		return
+	})
+	err = txMpx.AddJob(j)
+	if err != nil {
+		return nil, err
+	}
+
+	return primaryRows, nil
 }
 
 // Commit finishes the transaction.

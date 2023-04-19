@@ -247,12 +247,22 @@ func (sessMpx *SessionMpx) Select(column ...string) *SelectStmt {
 	b.runner = sessMpx
 	b.EventReceiver = sessMpx.PrimaryEventReceiver
 	b.Dialect = sessMpx.PrimaryConn.Dialect
-	b.query = func(ctx context.Context, builder Builder, dest interface{}) (int, string, error) {
-		return query(ctx, sessMpx, sessMpx.PrimaryEventReceiver, b, sessMpx.PrimaryConn.Dialect, dest)
-	}
-	b.queryRows = func(ctx context.Context, builder Builder) (*sql.Rows, error) {
-		_, rows, err := queryRows(ctx, sessMpx, sessMpx.PrimaryEventReceiver, b, sessMpx.PrimaryConn.Dialect)
-		return rows, err
+	if sessMpx.enableDoubleReads {
+		b.query = func(ctx context.Context, builder Builder, dest interface{}) (int, string, error) {
+			return queryMpx(ctx, sessMpx, sessMpx.PrimaryEventReceiver, sessMpx.SecondaryEventReceiver, b, sessMpx.PrimaryConn.Dialect, sessMpx.SecondaryConn.Dialect, dest)
+		}
+		b.queryRows = func(ctx context.Context, builder Builder) (*sql.Rows, error) {
+			_, rows, err := queryRowsMpx(ctx, sessMpx, sessMpx.PrimaryEventReceiver, sessMpx.SecondaryEventReceiver, b, sessMpx.PrimaryConn.Dialect, sessMpx.SecondaryConn.Dialect)
+			return rows, err
+		}
+	} else {
+		b.query = func(ctx context.Context, builder Builder, dest interface{}) (int, string, error) {
+			return query(ctx, sessMpx, sessMpx.PrimaryEventReceiver, b, sessMpx.PrimaryConn.Dialect, dest)
+		}
+		b.queryRows = func(ctx context.Context, builder Builder) (*sql.Rows, error) {
+			_, rows, err := queryRows(ctx, sessMpx, sessMpx.PrimaryEventReceiver, b, sessMpx.PrimaryConn.Dialect)
+			return rows, err
+		}
 	}
 	return b
 }
@@ -279,13 +289,24 @@ func (txMpx *TxMpx) Select(column ...string) *SelectStmt {
 	b.runner = txMpx
 	b.EventReceiver = txMpx.PrimaryTx.EventReceiver
 	b.Dialect = txMpx.PrimaryTx.Dialect
-	b.query = func(ctx context.Context, builder Builder, dest interface{}) (int, string, error) {
-		return query(ctx, txMpx, txMpx.PrimaryTx.EventReceiver, b, txMpx.PrimaryTx.Dialect, dest)
+	if txMpx.enableDoubleReads {
+		b.query = func(ctx context.Context, builder Builder, dest interface{}) (int, string, error) {
+			return queryMpx(ctx, txMpx, txMpx.PrimaryTx.EventReceiver, txMpx.SecondaryTx.EventReceiver, b, txMpx.PrimaryTx.Dialect, txMpx.SecondaryTx.Dialect, dest)
+		}
+		b.queryRows = func(ctx context.Context, builder Builder) (*sql.Rows, error) {
+			_, rows, err := queryRowsMpx(ctx, txMpx, txMpx.PrimaryTx.EventReceiver, txMpx.SecondaryTx.EventReceiver, b, txMpx.PrimaryTx.Dialect, txMpx.SecondaryTx.Dialect)
+			return rows, err
+		}
+	} else {
+		b.query = func(ctx context.Context, builder Builder, dest interface{}) (int, string, error) {
+			return query(ctx, txMpx, txMpx.PrimaryTx.EventReceiver, b, txMpx.PrimaryTx.Dialect, dest)
+		}
+		b.queryRows = func(ctx context.Context, builder Builder) (*sql.Rows, error) {
+			_, rows, err := queryRows(ctx, txMpx, txMpx.PrimaryTx.EventReceiver, b, txMpx.PrimaryTx.Dialect)
+			return rows, err
+		}
 	}
-	b.queryRows = func(ctx context.Context, builder Builder) (*sql.Rows, error) {
-		_, rows, err := queryRows(ctx, txMpx, txMpx.PrimaryTx.EventReceiver, b, txMpx.PrimaryTx.Dialect)
-		return rows, err
-	}
+
 	return b
 }
 
@@ -323,13 +344,24 @@ func (sessMpx *SessionMpx) SelectBySql(queryStr string, value ...interface{}) *S
 	b.runner = sessMpx
 	b.EventReceiver = sessMpx.PrimaryEventReceiver
 	b.Dialect = sessMpx.PrimaryConn.Dialect
-	b.query = func(ctx context.Context, builder Builder, dest interface{}) (int, string, error) {
-		return query(ctx, sessMpx, sessMpx.PrimaryEventReceiver, b, sessMpx.PrimaryConn.Dialect, dest)
+	if sessMpx.enableDoubleReads {
+		b.query = func(ctx context.Context, builder Builder, dest interface{}) (int, string, error) {
+			return queryMpx(ctx, sessMpx, sessMpx.PrimaryEventReceiver, sessMpx.SecondaryEventReceiver, b, sessMpx.PrimaryConn.Dialect, sessMpx.SecondaryConn.Dialect, dest)
+		}
+		b.queryRows = func(ctx context.Context, builder Builder) (*sql.Rows, error) {
+			_, rows, err := queryRowsMpx(ctx, sessMpx, sessMpx.PrimaryEventReceiver, sessMpx.SecondaryEventReceiver, b, sessMpx.PrimaryConn.Dialect, sessMpx.SecondaryConn.Dialect)
+			return rows, err
+		}
+	} else {
+		b.query = func(ctx context.Context, builder Builder, dest interface{}) (int, string, error) {
+			return query(ctx, sessMpx, sessMpx.PrimaryEventReceiver, b, sessMpx.PrimaryConn.Dialect, dest)
+		}
+		b.queryRows = func(ctx context.Context, builder Builder) (*sql.Rows, error) {
+			_, rows, err := queryRows(ctx, sessMpx, sessMpx.PrimaryEventReceiver, b, sessMpx.PrimaryConn.Dialect)
+			return rows, err
+		}
 	}
-	b.queryRows = func(ctx context.Context, builder Builder) (*sql.Rows, error) {
-		_, rows, err := queryRows(ctx, sessMpx, sessMpx.PrimaryEventReceiver, b, sessMpx.PrimaryConn.Dialect)
-		return rows, err
-	}
+
 	return b
 }
 
@@ -355,13 +387,24 @@ func (txMpx *TxMpx) SelectBySql(queryStr string, value ...interface{}) *SelectSt
 	b.runner = txMpx
 	b.EventReceiver = txMpx.PrimaryTx.EventReceiver
 	b.Dialect = txMpx.PrimaryTx.Dialect
-	b.query = func(ctx context.Context, builder Builder, dest interface{}) (int, string, error) {
-		return query(ctx, txMpx, txMpx.PrimaryTx.EventReceiver, b, txMpx.PrimaryTx.Dialect, dest)
+	if txMpx.enableDoubleReads {
+		b.query = func(ctx context.Context, builder Builder, dest interface{}) (int, string, error) {
+			return queryMpx(ctx, txMpx, txMpx.PrimaryTx.EventReceiver, txMpx.SecondaryTx.EventReceiver, b, txMpx.PrimaryTx.Dialect, txMpx.SecondaryTx.Dialect, dest)
+		}
+		b.queryRows = func(ctx context.Context, builder Builder) (*sql.Rows, error) {
+			_, rows, err := queryRowsMpx(ctx, txMpx, txMpx.PrimaryTx.EventReceiver, txMpx.SecondaryTx.EventReceiver, b, txMpx.PrimaryTx.Dialect, txMpx.SecondaryTx.Dialect)
+			return rows, err
+		}
+	} else {
+		b.query = func(ctx context.Context, builder Builder, dest interface{}) (int, string, error) {
+			return query(ctx, txMpx, txMpx.PrimaryTx.EventReceiver, b, txMpx.PrimaryTx.Dialect, dest)
+		}
+		b.queryRows = func(ctx context.Context, builder Builder) (*sql.Rows, error) {
+			_, rows, err := queryRows(ctx, txMpx, txMpx.PrimaryTx.EventReceiver, b, txMpx.PrimaryTx.Dialect)
+			return rows, err
+		}
 	}
-	b.queryRows = func(ctx context.Context, builder Builder) (*sql.Rows, error) {
-		_, rows, err := queryRows(ctx, txMpx, txMpx.PrimaryTx.EventReceiver, b, txMpx.PrimaryTx.Dialect)
-		return rows, err
-	}
+
 	return b
 }
 
