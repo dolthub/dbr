@@ -141,34 +141,36 @@ func (txMpx *TxMpx) QueryContext(ctx context.Context, query string, args ...inte
 		return nil, err
 	}
 
-	j := NewJob("dbr.secondary.query_context", map[string]string{"sql": query}, func() (rerr error) {
-		if txMpx.SecondaryTx.Tx == nil {
-			rerr = ErrSecondaryTxNotFound
-			return
-		}
-
-		var secondaryRows *sql.Rows
-		secondaryRows, rerr = txMpx.SecondaryTx.QueryContext(NewContextWithMetricValues(ctx), query, args...)
-		if rerr != nil {
-			return
-		}
-		defer func() {
-			cerr := secondaryRows.Close()
-			if rerr == nil {
-				rerr = cerr
+	if txMpx.enableDoubleReads {
+		j := NewJob("dbr.secondary.query_context", map[string]string{"sql": query}, func() (rerr error) {
+			if txMpx.SecondaryTx.Tx == nil {
+				rerr = ErrSecondaryTxNotFound
+				return
 			}
-		}()
 
-		// iterate secondary rows
-		// which wont be returned
-		for secondaryRows.Next() {
+			var secondaryRows *sql.Rows
+			secondaryRows, rerr = txMpx.SecondaryTx.QueryContext(NewContextWithMetricValues(ctx), query, args...)
+			if rerr != nil {
+				return
+			}
+			defer func() {
+				cerr := secondaryRows.Close()
+				if rerr == nil {
+					rerr = cerr
+				}
+			}()
+
+			// iterate secondary rows
+			// which wont be returned
+			for secondaryRows.Next() {
+			}
+			rerr = secondaryRows.Err()
+			return
+		})
+		err = txMpx.AddJob(j)
+		if err != nil {
+			return nil, err
 		}
-		rerr = secondaryRows.Err()
-		return
-	})
-	err = txMpx.AddJob(j)
-	if err != nil {
-		return nil, err
 	}
 
 	return primaryRows, nil
