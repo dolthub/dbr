@@ -6,7 +6,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"strconv"
 	"time"
 
 	"github.com/gocraft/dbr/v2/dialect"
@@ -423,7 +422,7 @@ func execMpx(
 				defer secondaryTraceImpl.SpanFinish(secondaryCtx)
 			}
 
-			secondaryResults, rerr := runnerMpx.SecondaryExecContext(secondaryCtx, secondaryQuery, secondaryValue...)
+			_, rerr = runnerMpx.SecondaryExecContext(secondaryCtx, secondaryQuery, secondaryValue...)
 			if rerr != nil {
 				if secondaryHasTracingImpl {
 					secondaryTraceImpl.SpanError(secondaryCtx, rerr)
@@ -433,28 +432,6 @@ func execMpx(
 				})
 			}
 
-			// assert primary and secondary are same
-			primaryRowsAffected, rerr := primaryResults.RowsAffected()
-			if rerr != nil {
-				return secondaryLog.EventErr("dbr.secondary.primary.assertion.error", rerr)
-			}
-
-			secondaryRowsAffected, rerr := secondaryResults.RowsAffected()
-			if rerr != nil {
-				return secondaryLog.EventErr("dbr.secondary.primary.assertion.error", rerr)
-			}
-
-			if secondaryRowsAffected != primaryRowsAffected {
-				if secondaryHasTracingImpl {
-					secondaryTraceImpl.SpanError(secondaryCtx, errRowsAffectedNotEqual)
-				}
-				return secondaryLog.EventErrKv("dbr.secondary.primary.assertion.error", errRowsAffectedNotEqual, kvs{
-					"primarySql":            primaryQuery,
-					"primaryRowsAffected":   strconv.FormatInt(primaryRowsAffected, 10),
-					"secondarySql":          secondaryQuery,
-					"secondaryRowsAffected": strconv.FormatInt(secondaryRowsAffected, 10),
-				})
-			}
 			return nil
 		},
 	}
