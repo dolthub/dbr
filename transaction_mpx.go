@@ -178,6 +178,12 @@ func (txMpx *TxMpx) QueryContext(ctx context.Context, query string, args ...inte
 
 // Commit finishes the transaction.
 func (txMpx *TxMpx) Commit() error {
+	err := txMpx.PrimaryTx.Commit()
+	if err != nil {
+		return txMpx.PrimaryTx.EventErr("dbr.primary.commit.error", err)
+	}
+	txMpx.PrimaryTx.Event("dbr.primary.commit")
+	
 	j := NewJob("dbr.secondary.commit", nil, func() error {
 		if txMpx.SecondaryTx.Tx == nil {
 			return ErrSecondaryTxNotFound
@@ -185,7 +191,7 @@ func (txMpx *TxMpx) Commit() error {
 		return txMpx.SecondaryTx.Commit()
 	})
 
-	err := txMpx.SecondaryQ.AddJobAndClose(j)
+	err = txMpx.SecondaryQ.AddJobAndClose(j)
 	if err != nil {
 		return err
 	}
@@ -205,12 +211,6 @@ func (txMpx *TxMpx) Commit() error {
 			}
 		}()
 	}
-
-	err = txMpx.PrimaryTx.Commit()
-	if err != nil {
-		return txMpx.PrimaryTx.EventErr("dbr.primary.commit.error", err)
-	}
-	txMpx.PrimaryTx.Event("dbr.primary.commit")
 	return nil
 }
 
