@@ -178,30 +178,35 @@ func (txMpx *TxMpx) QueryContext(ctx context.Context, query string, args ...inte
 
 // Commit finishes the transaction.
 func (txMpx *TxMpx) Commit() error {
+	// commit to the primary first
+	// and base the commit to the secondary
+	// on the success of the primary
 	err := txMpx.PrimaryTx.Commit()
-	if err != nil {
-		return txMpx.PrimaryTx.EventErr("dbr.primary.commit.error", err)
-	}
-	txMpx.PrimaryTx.Event("dbr.primary.commit")
-	
+
+	// if the primary commit error is not nil
+	// we need to rollback the secondary transaction.
+	// we commit the secondary transaction only if the primary succeeded.
 	j := NewJob("dbr.secondary.commit", nil, func() error {
 		if txMpx.SecondaryTx.Tx == nil {
 			return ErrSecondaryTxNotFound
 		}
-		return txMpx.SecondaryTx.Commit()
+		if err == nil {
+			return txMpx.SecondaryTx.Commit()
+		}
+		return txMpx.SecondaryTx.Rollback()
 	})
 
-	err = txMpx.SecondaryQ.AddJobAndClose(j)
-	if err != nil {
-		return err
+	serr := txMpx.SecondaryQ.AddJobAndClose(j)
+	if serr != nil {
+		return serr
 	}
 
 	// if true, block on secondary commit
 	if txMpx.shouldSyncAtCommit {
-		err = txMpx.SecondaryQ.Wait()
-		if err != nil {
-			txMpx.SecondaryTx.EventErr("dbr.secondary.queue.wait", err)
-			return err
+		werr := txMpx.SecondaryQ.Wait()
+		if werr != nil {
+			txMpx.SecondaryTx.EventErr("dbr.secondary.queue.wait", werr)
+			return werr
 		}
 	} else {
 		go func() {
@@ -211,6 +216,11 @@ func (txMpx *TxMpx) Commit() error {
 			}
 		}()
 	}
+
+	if err != nil {
+		return txMpx.PrimaryTx.EventErr("dbr.primary.commit.error", err)
+	}
+	txMpx.PrimaryTx.Event("dbr.primary.commit")
 	return nil
 }
 
