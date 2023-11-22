@@ -2,7 +2,6 @@ package dbr
 
 import (
 	"context"
-	"errors"
 	"golang.org/x/sync/errgroup"
 	"sync"
 	"sync/atomic"
@@ -11,8 +10,6 @@ import (
 const (
 	firstOccurrence = "__first_occurrence__"
 )
-
-var errFailedToAddJob = errors.New("failed to add job, secondary queue has been closed")
 
 type Job struct {
 	event string
@@ -43,7 +40,7 @@ type Queue struct {
 
 func (q *Queue) AddJob(j *Job) error {
 	if q.isClosed.Load() {
-		return errFailedToAddJob
+		return ErrFailedToAddJob
 	}
 	q.m.Lock()
 	defer q.m.Unlock()
@@ -53,7 +50,7 @@ func (q *Queue) AddJob(j *Job) error {
 
 func (q *Queue) AddJobAndClose(j *Job) error {
 	if q.isClosed.Load() {
-		return errFailedToAddJob
+		return ErrFailedToAddJob
 	}
 
 	q.m.Lock()

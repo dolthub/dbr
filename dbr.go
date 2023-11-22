@@ -4,14 +4,11 @@ package dbr
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"time"
 
 	"github.com/gocraft/dbr/v2/dialect"
 )
-
-var errRowsAffectedNotEqual = errors.New("rows affected not equal")
 
 // Open creates a Connection.
 // log can be nil to ignore logging.
