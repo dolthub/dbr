@@ -3,11 +3,8 @@ package dbr
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"time"
 )
-
-var ErrSecondaryTxNotFound = errors.New("secondary tx not found")
 
 // TxMpx is a multiplexed transaction created by SessionMpx.
 type TxMpx struct {
@@ -268,7 +265,7 @@ func (txMpx *TxMpx) RollbackUnlessCommitted() {
 		}
 
 		err := txMpx.SecondaryTx.Rollback()
-		if err == sql.ErrTxDone || err == errFailedToAddJob {
+		if err == sql.ErrTxDone || err == ErrFailedToAddJob {
 			// ok
 		} else if err != nil {
 			txMpx.SecondaryTx.EventErr("dbr.secondary.rollback.rollback_unless_committed", err)
@@ -279,7 +276,7 @@ func (txMpx *TxMpx) RollbackUnlessCommitted() {
 	}}
 
 	err := txMpx.SecondaryQ.AddJobAndClose(j)
-	if err != nil && err != errFailedToAddJob {
+	if err != nil && err != ErrFailedToAddJob {
 		txMpx.SecondaryTx.EventErr("dbr.secondary.add_and_close.rollback_unless_committed", err)
 	}
 
